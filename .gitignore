@@ -21,3 +21,4 @@ functions/src/migrate-*.ts
 # Firebase
 .firebase/
 .firebaserc
+.claude/settings.local.json
