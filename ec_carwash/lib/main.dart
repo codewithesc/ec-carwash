@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
-import 'package:firebase_analytics/firebase_analytics.dart';
-import 'firebase_options.dart'; // make sure you have this file (flutterfire configure)
+import 'firebase_options.dart';
 import 'theme.dart';
 import 'screens/login_page.dart';
 import 'screens/Admin/admin_staff_home.dart';
