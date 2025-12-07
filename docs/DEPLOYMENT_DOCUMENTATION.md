@@ -262,7 +262,12 @@ Response:
 // Cloud Functions Configuration
 const DEFAULT_LOCALE = "en-PH";
 const DEFAULT_TIME_ZONE = "Asia/Manila";
-const GEMINI_API_KEY = "AIzaSyDj7-EpkVM6md9EdcsdQD2kenkdFsnzNhs";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "YOUR_GEMINI_API_KEY_HERE";
+```
+
+**Note:** Store sensitive API keys in Firebase environment configuration:
+```bash
+firebase functions:config:set gemini.api_key="YOUR_API_KEY"
 ```
 
 ### 5.2 Firebase Security Rules

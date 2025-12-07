@@ -19,6 +19,10 @@ node_modules/
 # it commented so all members can deploy to the same project(s) in .firebaserc.
 # .firebaserc
 
+# Environment variables
+.env
+.env.local
+
 # Runtime data
 pids
 *.pid

@@ -52,7 +52,10 @@
       "Bash(gcloud auth application-default print-access-token:*)",
       "Bash(npx firebase deploy:*)",
       "Bash(python3:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nProduction cleanup: Remove debugging code, test scripts, and organize documentation\n\nMajor Changes:\n- Removed all test/debugging scripts from ec_carwash/scripts, functions/src, and root scripts folder\n- Deleted debugging utilities (delete_all_data.dart, reset_commissions.dart, csv_importer.dart)\n- Removed all emojis from code and user-facing messages\n- Cleaned up unnecessary verbose comments\n\nCode Cleanup:\n- Removed emojis from error_logger.dart, google_sign_in_service.dart, analytics_screen.dart, book_service_screen.dart, login_page.dart\n- All debug print statements properly wrapped in kDebugMode checks\n- Removed verbose NOTE comment blocks\n\nDocumentation:\n- Created comprehensive README.md at project root\n- Organized all documentation into docs/ folder (20+ files)\n- Moved ec_carwash/README.md to docs/FLUTTER_TEMPLATE_README.md\n- Moved functions/README.md to docs/CLOUD_FUNCTIONS_README.md\n\nConfiguration:\n- Updated .gitignore to exclude test scripts and debug files\n- Updated ec_carwash/.gitignore for better production readiness\n\nFiles Deleted:\n- ec_carwash/scripts/ (3 test scripts)\n- scripts/ (root debugging scripts)\n- functions/src/migrate-bookings-http.ts\n- functions/src/check-completed.ts\n- ec_carwash/lib/utils/delete_all_data.dart\n- ec_carwash/lib/utils/reset_commissions.dart\n- ec_carwash/lib/utils/csv_importer.dart\n- ec_carwash/lib/screens/Admin/pos_screen.dart.bak\n- JANUARY-2025.xlsx\n\nGenerated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git push:*)",
+      "Bash(git check-ignore:*)"
     ],
     "deny": [],
     "ask": []

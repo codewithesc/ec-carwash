@@ -384,7 +384,14 @@ export const generateAISummary = onRequest(
       return;
     }
 
-    const apiKey = "AIzaSyDj7-EpkVM6md9EdcsdQD2kenkdFsnzNhs";
+    // Get API key from environment variable
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
+      logger.error("GEMINI_API_KEY not configured");
+      response.status(500).send("API key not configured");
+      return;
+    }
     const apiUrl =
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
