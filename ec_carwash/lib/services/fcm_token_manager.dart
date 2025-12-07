@@ -1,6 +1,7 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:ec_carwash/config/permissions_config.dart';
 
 /// Service to manage FCM tokens for push notifications
 class FCMTokenManager {
@@ -23,8 +24,6 @@ class FCMTokenManager {
       );
 
       if (settings.authorizationStatus == AuthorizationStatus.authorized) {
-        print('User granted permission');
-
         // Get the FCM token
         String? token = await _firebaseMessaging.getToken();
 
@@ -36,11 +35,9 @@ class FCMTokenManager {
             saveTokenToFirestore(newToken);
           });
         }
-      } else {
-        print('User declined or has not accepted permission');
       }
     } catch (e) {
-      print('Error initializing FCM token: $e');
+      // Silently handle error
     }
   }
 
@@ -50,18 +47,35 @@ class FCMTokenManager {
       User? user = _auth.currentUser;
 
       if (user != null) {
+        // Determine user role based on email
+        final role = _getRoleByEmail(user.email);
+
         await _firestore.collection('Users').doc(user.uid).set({
           'fcmToken': token,
           'lastTokenUpdate': FieldValue.serverTimestamp(),
           'email': user.email,
           'userId': user.uid,
+          'role': role,
         }, SetOptions(merge: true));
-
-        print('FCM Token saved to Firestore for user: ${user.uid}');
       }
     } catch (e) {
-      print('Error saving token to Firestore: $e');
+      // Silently handle error
     }
+  }
+
+  /// Determine role based on email address
+  static String _getRoleByEmail(String? email) {
+    if (email == null) return 'customer';
+
+    if (PermissionsConfig.superAdminEmails.contains(email.toLowerCase())) {
+      return 'superadmin';
+    } else if (PermissionsConfig.adminEmails.contains(email.toLowerCase())) {
+      return 'admin';
+    } else if (PermissionsConfig.staffEmails.contains(email.toLowerCase())) {
+      return 'staff';
+    }
+
+    return 'customer';
   }
 
   /// Delete the FCM token from Firestore (call on logout)
@@ -76,11 +90,9 @@ class FCMTokenManager {
 
         // Delete the token from FCM
         await _firebaseMessaging.deleteToken();
-
-        print('FCM Token deleted from Firestore for user: ${user.uid}');
       }
     } catch (e) {
-      print('Error deleting token from Firestore: $e');
+      // Silently handle error
     }
   }
 
@@ -89,7 +101,6 @@ class FCMTokenManager {
     try {
       return await _firebaseMessaging.getToken();
     } catch (e) {
-      print('Error getting FCM token: $e');
       return null;
     }
   }

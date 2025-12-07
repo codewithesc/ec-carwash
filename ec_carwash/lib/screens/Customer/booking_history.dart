@@ -8,6 +8,8 @@ import 'book_service_screen.dart';
 import 'customer_home.dart';
 import 'account_info_screen.dart';
 import 'notifications_screen.dart';
+import '../../services/google_sign_in_service.dart';
+import '../login_page.dart';
 
 class BookingHistoryScreen extends StatefulWidget {
   final int initialTabIndex; // 0 = Completed, 1 = Cancelled
@@ -195,7 +197,37 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
               ListTile(
                 leading: const Icon(Icons.logout),
                 title: const Text("Logout"),
-                onTap: () => Navigator.pop(context), // TODO: add logout logic
+                onTap: () async {
+                  final confirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('Logout'),
+                      content: const Text('Are you sure you want to logout?'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text('Cancel'),
+                        ),
+                        ElevatedButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red,
+                            foregroundColor: Colors.white,
+                          ),
+                          child: const Text('Logout'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (confirmed == true) {
+                    await GoogleSignInService.signOut();
+                    if (!context.mounted) return;
+                    Navigator.of(context).pushAndRemoveUntil(
+                      MaterialPageRoute(builder: (_) => const LoginPage()),
+                      (route) => false,
+                    );
+                  }
+                },
               ),
             ],
           ),
@@ -215,99 +247,115 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
     );
   }
 
-  /// COMPLETED = from Transactions where customer.email == user.email
-  /// Reads `services` first, falls back to legacy `items`.
+  /// COMPLETED = from Bookings where status == "completed" AND source == "customer-app"
+  /// Then filter client-side for userId OR userEmail match
   Widget _buildCompletedTab(User user) {
-    // Resolve the unified customerId for this user (new schema)
-    final customerFuture = FirebaseFirestore.instance
-        .collection('Customers')
-        .where('email', isEqualTo: user.email)
-        .limit(1)
-        .get();
+    // Get all completed customer-app bookings and filter by user
+    final stream = FirebaseFirestore.instance
+        .collection('Bookings')
+        .where('status', isEqualTo: 'completed')
+        .where('source', isEqualTo: 'customer-app')
+        .orderBy('createdAt', descending: true)
+        .limit(200)
+        .snapshots();
 
-    return FutureBuilder<QuerySnapshot>(
-      future: customerFuture,
-      builder: (context, custSnap) {
-        // While resolving the customer, show progress
-        if (custSnap.connectionState == ConnectionState.waiting) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: stream,
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
         }
 
-        // Determine stream based on available schema
-        Stream<QuerySnapshot> stream;
-        if (custSnap.hasData && custSnap.data!.docs.isNotEmpty) {
-          final customerId = custSnap.data!.docs.first.id;
-          // New schema: filter by customerId
-          stream = FirebaseFirestore.instance
-              .collection('Transactions')
-              .where('customerId', isEqualTo: customerId)
-              .orderBy('transactionAt', descending: true)
-              .snapshots();
-        } else {
-          // Legacy fallback: nested customer.email (may be absent in new data)
-          stream = FirebaseFirestore.instance
-              .collection('Transactions')
-              .where('customer.email', isEqualTo: user.email)
-              .orderBy('createdAt', descending: true)
-              .snapshots();
+        if (snap.hasError) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                const SizedBox(height: 16),
+                Text('Error: ${snap.error}'),
+                const SizedBox(height: 8),
+                Text('User: ${user.email}', style: TextStyle(fontSize: 12)),
+                const SizedBox(height: 8),
+                ElevatedButton(
+                  onPressed: () => setState(() {}),
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          );
         }
 
-        return StreamBuilder<QuerySnapshot>(
-          stream: stream,
-          builder: (context, snap) {
-            if (snap.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (!snap.hasData || snap.data!.docs.isEmpty) {
-              return const Center(child: Text('No completed transactions.'));
-            }
+        if (!snap.hasData) {
+          return const Center(child: Text('No data available.'));
+        }
 
-            final docs = snap.data!.docs;
-            return ListView.builder(
-              itemCount: docs.length,
+        // Filter bookings for THIS user only (by userId OR userEmail)
+        final userBookings = snap.data!.docs.where((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          final bookingUserId = data['userId'] as String? ?? '';
+          final bookingUserEmail = data['userEmail'] as String? ?? '';
+
+          // Match if userId OR userEmail matches (case-insensitive for email)
+          return (bookingUserId.isNotEmpty && bookingUserId == user.uid) ||
+                 (bookingUserEmail.isNotEmpty &&
+                  bookingUserEmail.toLowerCase() == user.email?.toLowerCase());
+        }).toList();
+
+        if (userBookings.isEmpty) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.inbox_outlined, size: 64, color: Colors.grey[400]),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'No completed bookings yet',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Your completed service history will appear here',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.grey[600]),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
+        return ListView.builder(
+              itemCount: userBookings.length,
               itemBuilder: (_, i) {
-                final data = docs[i].data() as Map<String, dynamic>;
+                final data = userBookings[i].data() as Map<String, dynamic>;
 
-                // Plate number from unified field, fallback to legacy nested customer
-                final legacyCustomer =
-                    (data['customer'] as Map<String, dynamic>?) ?? {};
-                final plate = (data['vehiclePlateNumber'] ??
-                        legacyCustomer['plateNumber'] ??
-                        'N/A')
-                    .toString();
+                final plate = (data['plateNumber'] ?? 'N/A').toString();
 
-                // Use unified timestamp when available
-                final scheduledDateTime =
-                    data['transactionAt'] ?? data['createdAt'];
-                final formattedDateTime =
-                    _formatDateTime(scheduledDateTime);
+                // Use updatedAt (when marked complete) or scheduledDateTime
+                final scheduledDateTime = data['updatedAt'] ??
+                                         data['scheduledDateTime'] ??
+                                         data['selectedDateTime'] ??
+                                         data['createdAt'];
+                final formattedDateTime = _formatDateTime(scheduledDateTime);
 
-                // Prefer new schema `services`, fallback to old `items`
-                final rawList = (data['services'] ?? data['items'])
-                        as List<dynamic>? ??
-                    [];
-                final entries = rawList.cast<Map<String, dynamic>>();
+                final services = (data['services'] as List<dynamic>? ?? [])
+                    .cast<Map<String, dynamic>>();
 
-                // Build services label robustly
-                final servicesLabel = entries.isNotEmpty
-                    ? entries
-                        .map((e) {
-                          final code =
-                              (e['serviceCode'] ?? e['code'] ?? '')
-                                  .toString();
-                          final name =
-                              (e['serviceName'] ?? '').toString();
-                          final vt =
-                              (e['vehicleType'] ?? '').toString();
-                          final title = name.isNotEmpty ? name : code;
-                          return vt.isNotEmpty
-                              ? '$title ($vt)'
-                              : title;
+                // Build services label
+                final servicesLabel = services.isNotEmpty
+                    ? services
+                        .map((s) {
+                          final name = (s['serviceName'] ?? '').toString();
+                          final vt = (s['vehicleType'] ?? '').toString();
+                          return vt.isNotEmpty ? '$name ($vt)' : name;
                         })
                         .join(', ')
                     : 'N/A';
 
-                final total = (data['total'] ?? 0).toString();
+                final total = (data['totalAmount'] ?? data['total'] ?? 0).toString();
 
                 return Card(
                   margin: const EdgeInsets.all(12),
@@ -326,7 +374,7 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
                             const SizedBox(height: 4),
                             Text('Services: $servicesLabel'),
                             const SizedBox(height: 4),
-                            Text('Total: ₱$total'),
+                            Text('Total: PHP $total'),
                           ],
                         ),
                         trailing: const Chip(
@@ -363,19 +411,19 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
                 );
               },
             );
-          },
-        );
       },
     );
   }
 
-  /// CANCELLED = from Bookings where userEmail == user.email AND status == "cancelled"
+  /// CANCELLED = from Bookings where status == "cancelled" AND source == "customer-app"
+  /// Then filter client-side for userId OR userEmail match
   Widget _buildCancelledTab(User user) {
     final stream = FirebaseFirestore.instance
         .collection('Bookings')
-        .where('userEmail', isEqualTo: user.email)
         .where('status', isEqualTo: 'cancelled')
+        .where('source', isEqualTo: 'customer-app')
         .orderBy('createdAt', descending: true)
+        .limit(200)
         .snapshots();
 
     return StreamBuilder<QuerySnapshot>(
@@ -384,16 +432,49 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
         if (snap.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
         }
-        if (!snap.hasData || snap.data!.docs.isEmpty) {
+
+        if (snap.hasError) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                const SizedBox(height: 16),
+                Text('Error loading cancelled bookings: ${snap.error}'),
+                const SizedBox(height: 8),
+                ElevatedButton(
+                  onPressed: () => setState(() {}),
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          );
+        }
+
+        if (!snap.hasData) {
+          return const Center(child: Text('No data available.'));
+        }
+
+        // Filter bookings for THIS user only (by userId OR userEmail)
+        final userBookings = snap.data!.docs.where((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          final bookingUserId = data['userId'] as String? ?? '';
+          final bookingUserEmail = data['userEmail'] as String? ?? '';
+
+          // Match if userId OR userEmail matches (case-insensitive for email)
+          return (bookingUserId.isNotEmpty && bookingUserId == user.uid) ||
+                 (bookingUserEmail.isNotEmpty &&
+                  bookingUserEmail.toLowerCase() == user.email?.toLowerCase());
+        }).toList();
+
+        if (userBookings.isEmpty) {
           return const Center(child: Text('No cancelled bookings.'));
         }
 
-        final docs = snap.data!.docs;
-
         return ListView.builder(
-          itemCount: docs.length,
+          itemCount: userBookings.length,
           itemBuilder: (_, i) {
-            final data = docs[i].data() as Map<String, dynamic>;
+            final data = userBookings[i].data() as Map<String, dynamic>;
             final plate = (data['plateNumber'] ?? 'N/A').toString();
 
             // Use unified datetime field (with fallback for legacy data)

@@ -3,6 +3,12 @@ import 'package:google_fonts/google_fonts.dart';
 
 class AppTheme {
   static ThemeData get lightTheme {
+    // Use Poppins with Roboto as fallback for special characters like ₱
+    final baseTextTheme = GoogleFonts.poppinsTextTheme();
+    final textThemeWithFallback = baseTextTheme.apply(
+      fontFamilyFallback: const ['Roboto'],
+    );
+
     return ThemeData(
       useMaterial3: true,
       colorScheme: ColorScheme.fromSeed(
@@ -11,7 +17,9 @@ class AppTheme {
         primary: Colors.yellow[700],
         secondary: Colors.black,
       ),
-      textTheme: GoogleFonts.poppinsTextTheme(),
+      fontFamily: 'Poppins',
+      fontFamilyFallback: const ['Roboto'],
+      textTheme: textThemeWithFallback,
       appBarTheme: const AppBarTheme(
         backgroundColor: Colors.black,
         foregroundColor: Colors.yellow,

@@ -18,6 +18,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
   List<Service> _allServices = [];
   List<String> _categories = [];
   bool _isLoading = true;
+  bool _showInactiveServices = true;
 
   @override
   void initState() {
@@ -54,6 +55,11 @@ class _ServicesScreenState extends State<ServicesScreen> {
 
   List<Service> get _filteredServices {
     List<Service> services = _allServices;
+
+    // Filter inactive services based on toggle
+    if (!_showInactiveServices) {
+      services = services.where((service) => service.isActive).toList();
+    }
 
     if (_selectedCategory != 'All') {
       services = services.where((service) => service.category == _selectedCategory).toList();
@@ -204,6 +210,19 @@ class _ServicesScreenState extends State<ServicesScreen> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Checkbox(
+                      value: _showInactiveServices,
+                      onChanged: (value) {
+                        setState(() => _showInactiveServices = value ?? true);
+                      },
+                      activeColor: Colors.yellow.shade700,
+                    ),
+                    const Text('Show Inactive Services'),
+                  ],
+                ),
               ],
             )
           else
@@ -285,6 +304,20 @@ class _ServicesScreenState extends State<ServicesScreen> {
                     ],
                   ),
                 ),
+                const SizedBox(width: 16),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Checkbox(
+                      value: _showInactiveServices,
+                      onChanged: (value) {
+                        setState(() => _showInactiveServices = value ?? true);
+                      },
+                      activeColor: Colors.yellow.shade700,
+                    ),
+                    const Text('Show Inactive Services'),
+                  ],
+                ),
               ],
             ),
         ],
@@ -315,15 +348,20 @@ class _ServicesScreenState extends State<ServicesScreen> {
             .replaceAll('PROMO', 'PR')
             .replaceAll('UPGRADE', 'UP');
 
-        return Card(
-          margin: const EdgeInsets.only(bottom: 12),
-          color: Colors.yellow.shade50,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-            side: const BorderSide(color: Colors.black87, width: 1.5),
-          ),
-          elevation: 2,
-          child: ExpansionTile(
+        return Opacity(
+          opacity: service.isActive ? 1.0 : 0.6,
+          child: Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            color: service.isActive ? Colors.yellow.shade50 : Colors.grey.shade100,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+              side: BorderSide(
+                color: service.isActive ? Colors.black87 : Colors.grey.shade400,
+                width: 1.5,
+              ),
+            ),
+            elevation: 2,
+            child: ExpansionTile(
             tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             leading: Container(
               decoration: BoxDecoration(
@@ -365,19 +403,26 @@ class _ServicesScreenState extends State<ServicesScreen> {
                 if (!service.isActive)
                   Container(
                     margin: const EdgeInsets.only(top: 6),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
-                      color: Colors.yellow.shade700,
+                      color: Colors.orange.shade100,
                       borderRadius: BorderRadius.circular(4),
-                      border: Border.all(color: Colors.black87, width: 1),
+                      border: Border.all(color: Colors.orange.shade700, width: 1.5),
                     ),
-                    child: const Text(
-                      'INACTIVE',
-                      style: TextStyle(
-                        color: Colors.black87,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
-                      ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.visibility_off, size: 14, color: Colors.orange.shade700),
+                        const SizedBox(width: 4),
+                        Text(
+                          'INACTIVE - Not Available for Booking',
+                          style: TextStyle(
+                            color: Colors.orange.shade900,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
               ],
@@ -503,6 +548,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
                 ),
               ),
             ],
+          ),
           ),
         );
       },
@@ -903,7 +949,34 @@ class _ServicesScreenState extends State<ServicesScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Service'),
-        content: Text('Are you sure you want to delete "${service.name}"? This will deactivate the service.'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Are you sure you want to delete "${service.name}"?'),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.red.shade200),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.warning_amber, color: Colors.red.shade700, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'This will permanently remove the service from the list. The service data will be preserved in the database.',
+                      style: TextStyle(fontSize: 12, color: Colors.red.shade900),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),

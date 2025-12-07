@@ -224,26 +224,87 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       await NotificationManager.markAsRead(notification.id!);
     }
 
+    // Show full notification details in a dialog first
+    if (mounted) {
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Row(
+            children: [
+              Icon(
+                _getNotificationIcon(notification.type),
+                color: _getNotificationColor(notification.type),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  notification.title,
+                  style: const TextStyle(fontSize: 18),
+                ),
+              ),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  notification.message,
+                  style: const TextStyle(fontSize: 15),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  _formatDateTime(notification.createdAt),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Dismiss'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _navigateFromNotificationType(notification.type);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.yellow[700],
+                foregroundColor: Colors.black,
+              ),
+              child: const Text('View Booking'),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  void _navigateFromNotificationType(String type) {
     // Navigate based on notification type
-    if (notification.type == 'booking_approved') {
+    if (type == 'booking_approved') {
       if (mounted) {
-        // Navigate to CustomerHome with Approved tab selected
         Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const CustomerHome(initialTabIndex: 1)),
         );
       }
-    } else if (notification.type == 'booking_completed') {
+    } else if (type == 'booking_completed') {
       if (mounted) {
-        // Navigate to BookingHistoryScreen with Completed tab (index 0)
         Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const BookingHistoryScreen(initialTabIndex: 0)),
         );
       }
-    } else if (notification.type == 'booking_cancelled') {
+    } else if (type == 'booking_cancelled') {
       if (mounted) {
-        // Navigate to BookingHistoryScreen with Cancelled tab (index 1)
         Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const BookingHistoryScreen(initialTabIndex: 1)),

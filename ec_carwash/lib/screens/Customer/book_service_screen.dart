@@ -31,7 +31,7 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
   bool _isRebookMode = false; // when true, vehicle/services are fixed (read-only)
   // Locale-aware currency formatter for PHP
   final NumberFormat _currency =
-      NumberFormat.currency(locale: 'en_PH', symbol: '₱', decimalDigits: 0);
+      NumberFormat.currency(locale: 'en_PH', symbol: 'PHP ', decimalDigits: 0);
 
   String formatCurrency(num value) => _currency.format(value);
 
@@ -115,7 +115,7 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
       if (mounted && _cart.isNotEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('✓ Services loaded! Please select a new date and time for your booking.'),
+            content: Text('Services loaded! Please select a new date and time for your booking.'),
             backgroundColor: Colors.blue,
             duration: Duration(seconds: 4),
           ),
@@ -266,6 +266,43 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
         return;
       }
 
+      // Validate that the selected time hasn't already passed (for today only)
+      if (_selectedDate != null) {
+        final selectedDateTime = DateTime(
+          _selectedDate!.year,
+          _selectedDate!.month,
+          _selectedDate!.day,
+          hour,
+          minute,
+        );
+
+        final now = DateTime.now();
+        if (selectedDateTime.isBefore(now)) {
+          if (mounted) {
+            await showDialog(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: const Text('Past Time Selected'),
+                content: Text(
+                  'The selected time (${picked.format(context)}) has already passed.\n\nPlease select a future time slot.',
+                ),
+                actions: [
+                  ElevatedButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.yellow[700],
+                      foregroundColor: Colors.black,
+                    ),
+                    child: const Text('OK'),
+                  ),
+                ],
+              ),
+            );
+          }
+          return;
+        }
+      }
+
       setState(() => _selectedTime = picked);
     }
   }
@@ -320,13 +357,14 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
       // Check if there are less than 2 reserved slots (2 teams available)
       return reservedSlots.length < 2;
     } catch (e) {
-      debugPrint('Error checking slot availability: $e');
       return true; // Allow booking if check fails
     }
   }
 
   // --- SUBMIT BOOKING (UNIFIED) ---
   Future<void> _submitBooking() async {
+    if (_isLoading) return; // Prevent double submission
+
     if (_cart.isEmpty ||
         _selectedDate == null ||
         _selectedTime == null ||
@@ -439,16 +477,29 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
         _isLoading = false;
       });
 
-      // close sheet if open and give confirmation
-      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
-
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Booking created successfully! (ID: ${bookingId.substring(0, 8)}...)"),
-            backgroundColor: Colors.green,
-          ),
-        );
+        // Get the root navigator to properly close the bottom sheet
+        final navigator = Navigator.of(context, rootNavigator: true);
+
+        // Close the bottom sheet first
+        navigator.pop();
+
+        // Small delay to ensure bottom sheet closes cleanly
+        await Future.delayed(const Duration(milliseconds: 300));
+
+        if (mounted) {
+          // Pop the BookServiceScreen to return to vehicle selection (CustomerHome)
+          Navigator.of(context).pop();
+
+          // Show success message after returning to vehicle selection
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Booking created successfully! (ID: ${bookingId.substring(0, 8)}...)"),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
       }
     } catch (e) {
       setState(() => _isLoading = false);
@@ -524,7 +575,7 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
                               return ListTile(
                                 title: Text(item.serviceName),
                                 subtitle: Text(
-                                  "${item.vehicleType} - ₱${item.price}",
+                                  "${item.vehicleType} - PHP ${item.price}",
                                 ),
                                 trailing: IconButton(
                                   icon: const Icon(
@@ -553,7 +604,7 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
                           ),
                         const SizedBox(height: 8),
                         Text(
-                          "Total: ₱$total",
+                          "Total: PHP $total",
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 12),
@@ -751,13 +802,29 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
                         ),
                         const SizedBox(height: 16),
                         ElevatedButton(
-                          onPressed: _submitBooking,
+                          onPressed: _isLoading ? null : _submitBooking,
                           style: ElevatedButton.styleFrom(
                             minimumSize: const Size(double.infinity, 50),
-                            backgroundColor: Colors.yellow[700],
+                            backgroundColor: _isLoading ? Colors.grey : Colors.yellow[700],
                             foregroundColor: Colors.black,
                           ),
-                          child: const Text("Book Now"),
+                          child: _isLoading
+                              ? Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: const [
+                                    SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        valueColor: AlwaysStoppedAnimation<Color>(Colors.black),
+                                      ),
+                                    ),
+                                    SizedBox(width: 12),
+                                    Text("Booking..."),
+                                  ],
+                                )
+                              : const Text("Book Now"),
                         ),
                         const SizedBox(
                           height: 40,
@@ -1038,7 +1105,7 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
                           Icon(
                             _getVehicleIcon(vehicle.vehicleType ?? ''),
                             size: 50,
-                            color: Colors.blue,
+                            color: Colors.black,
                           ),
                           const SizedBox(height: 8),
                           Text(
@@ -1095,7 +1162,7 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
                   if (_selectedVehicle != null)
                     Row(
                       children: [
-                        Icon(_getVehicleIcon(_selectedVehicle!.vehicleType ?? ''), color: Colors.blue),
+                        Icon(_getVehicleIcon(_selectedVehicle!.vehicleType ?? ''), color: Colors.black),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Column(
@@ -1157,7 +1224,7 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
                                 ],
                               ),
                             ),
-                            Text('₱${item.price}')
+                            Text('PHP ${item.price}')
                           ],
                         );
                       },
@@ -1167,7 +1234,7 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text('Total', style: TextStyle(fontWeight: FontWeight.bold)),
-                      Text('₱$total', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      Text('PHP $total', style: const TextStyle(fontWeight: FontWeight.bold)),
                     ],
                   )
                 ],
@@ -1248,13 +1315,29 @@ class _BookServiceScreenState extends State<BookServiceScreen> {
           ),
           const SizedBox(height: 16),
           ElevatedButton(
-            onPressed: _submitBooking,
+            onPressed: _isLoading ? null : _submitBooking,
             style: ElevatedButton.styleFrom(
               minimumSize: const Size(double.infinity, 50),
-              backgroundColor: Colors.yellow[700],
+              backgroundColor: _isLoading ? Colors.grey : Colors.yellow[700],
               foregroundColor: Colors.black,
             ),
-            child: const Text("Book Now"),
+            child: _isLoading
+                ? Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: const [
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.black),
+                        ),
+                      ),
+                      SizedBox(width: 12),
+                      Text("Booking..."),
+                    ],
+                  )
+                : const Text("Book Now"),
           ),
         ],
       ),
@@ -1475,81 +1558,180 @@ class _VehicleServicesScreenState extends State<VehicleServicesScreen> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         elevation: 3,
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                key,
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () {
+                            // Show full service details in a dialog
+                            showDialog(
+                              context: context,
+                              builder: (context) => AlertDialog(
+                                title: Text(key),
+                                content: SingleChildScrollView(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        name,
+                                        style: const TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      if (desc.isNotEmpty) ...[
+                                        const SizedBox(height: 12),
+                                        const Text(
+                                          'Description:',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          desc,
+                                          style: const TextStyle(
+                                            fontSize: 14,
+                                            color: Colors.black87,
+                                          ),
+                                        ),
+                                      ],
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        'Price: PHP $price',
+                                        style: const TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.green,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(context),
+                                    child: const Text('Close'),
+                                  ),
+                                  ElevatedButton(
+                                    onPressed: () {
+                                      Navigator.pop(context);
+                                      final added = widget.onAddToCart(
+                                        key,
+                                        widget.vehicleType,
+                                        price,
+                                      );
+                                      setState(() {});
+                                      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            added
+                                                ? 'Added "$name" to cart'
+                                                : '"$name" is already in your cart',
+                                          ),
+                                          duration: const Duration(seconds: 1),
+                                          behavior: SnackBarBehavior.floating,
+                                        ),
+                                      );
+                                    },
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.yellow[700],
+                                      foregroundColor: Colors.black,
+                                    ),
+                                    child: const Text('Add to Cart'),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(height: 6),
-                              Text(
-                                name,
-                                style: const TextStyle(fontSize: 14),
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 1,
-                              ),
-                              if (desc.isNotEmpty) ...[
+                            );
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        key,
+                                        style: const TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    Icon(
+                                      Icons.info_outline,
+                                      size: 18,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ],
+                                ),
                                 const SizedBox(height: 6),
                                 Text(
-                                  desc,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey,
-                                  ),
-                                  maxLines: 2,
+                                  name,
+                                  style: const TextStyle(fontSize: 13),
                                   overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                ),
+                                if (desc.isNotEmpty) ...[
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    desc,
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey,
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                                const Spacer(),
+                                Text(
+                                  "PHP $price",
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: ElevatedButton(
+                                    onPressed: () {
+                                      final added = widget.onAddToCart(
+                                        key,
+                                        widget.vehicleType,
+                                        price,
+                                      );
+                                      // Rebuild local state so badge updates immediately
+                                      setState(() {});
+                                      // Toast based on result
+                                      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            added
+                                                ? 'Added "$name" to cart'
+                                                : '"$name" is already in your cart',
+                                          ),
+                                          duration: const Duration(seconds: 1),
+                                          behavior: SnackBarBehavior.floating,
+                                        ),
+                                      );
+                                    },
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.yellow[700],
+                                      foregroundColor: Colors.black,
+                                    ),
+                                    child: const Text("Add"),
+                                  ),
                                 ),
                               ],
-                              const Spacer(),
-                              Text(
-                                "₱$price",
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              SizedBox(
-                                width: double.infinity,
-                                child: ElevatedButton(
-                                  onPressed: () {
-                                    final added = widget.onAddToCart(
-                                      key,
-                                      widget.vehicleType,
-                                      price,
-                                    );
-                                    // Rebuild local state so badge updates immediately
-                                    setState(() {});
-                                    // Toast based on result
-                                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text(
-                                          added
-                                              ? 'Added "$name" to cart'
-                                              : '"$name" is already in your cart',
-                                        ),
-                                        duration: const Duration(seconds: 1),
-                                        behavior: SnackBarBehavior.floating,
-                                      ),
-                                    );
-                                  },
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.yellow[700],
-                                    foregroundColor: Colors.black,
-                                  ),
-                                  child: const Text("Add"),
-                                ),
-                              ),
-                            ],
+                            ),
                           ),
                         ),
                       );

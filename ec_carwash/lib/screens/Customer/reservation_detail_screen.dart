@@ -20,6 +20,7 @@ class _ReservationDetailScreenState extends State<ReservationDetailScreen> {
   DateTime? _selectedDate;
   TimeOfDay? _selectedTime;
   bool _saving = false;
+  bool _cancelling = false;
 
   DateTime? get _initialDateTime {
     final raw = widget.initialData['scheduledDateTime'] ??
@@ -94,6 +95,64 @@ class _ReservationDetailScreenState extends State<ReservationDetailScreen> {
     }
   }
 
+  Future<void> _cancelBooking() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancel Booking'),
+        content: const Text('Are you sure you want to cancel this reservation?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('No'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Yes, Cancel'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _cancelling = true);
+    try {
+      await FirebaseFirestore.instance
+          .collection('Bookings')
+          .doc(widget.bookingId)
+          .update({
+        'status': 'cancelled',
+        'cancelledAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Booking cancelled successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error cancelling booking: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _cancelling = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final services = (widget.initialData['services'] as List<dynamic>?) ?? [];
@@ -111,7 +170,7 @@ class _ReservationDetailScreenState extends State<ReservationDetailScreen> {
         title: const Text('Reservation Details'),
       ),
       body: AbsorbPointer(
-        absorbing: _saving,
+        absorbing: _saving || _cancelling,
         child: Stack(
           children: [
             ListView(
@@ -203,9 +262,21 @@ class _ReservationDetailScreenState extends State<ReservationDetailScreen> {
                   ),
                   child: const Text('Save Changes'),
                 ),
+                if (isPending) ...[
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: _cancelBooking,
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(double.infinity, 48),
+                      foregroundColor: Colors.red,
+                      side: const BorderSide(color: Colors.red, width: 2),
+                    ),
+                    child: const Text('Cancel Booking'),
+                  ),
+                ],
               ],
             ),
-            if (_saving)
+            if (_saving || _cancelling)
               Positioned.fill(
                 child: Container(
                   color: Colors.black.withOpacity(0.2),

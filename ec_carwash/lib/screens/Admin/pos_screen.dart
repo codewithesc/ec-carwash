@@ -4,9 +4,9 @@ import 'package:ec_carwash/data_models/services_data.dart';
 import 'package:ec_carwash/data_models/inventory_data.dart';
 import 'package:ec_carwash/data_models/customer_data_unified.dart';
 import 'package:ec_carwash/utils/responsive_helper.dart';
+import 'package:ec_carwash/utils/currency_formatter.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
-import 'package:flutter/services.dart' show rootBundle;
 import 'package:pdf/pdf.dart';
 
 class POSScreen extends StatefulWidget {
@@ -58,6 +58,7 @@ class _POSScreenState extends State<POSScreen> {
 
   List<Service> _services = [];
   bool _isLoadingServices = true;
+  bool _isProcessingTransaction = false;
 
   @override
   void initState() {
@@ -130,14 +131,11 @@ class _POSScreenState extends State<POSScreen> {
       return;
     }
 
-    // Get the service name from servicesData
     final serviceName = servicesData[code]?["name"] ?? code;
 
-    // Check if service already exists in cart (by code only, not category)
     final index = cart.indexWhere((item) => item["code"] == code);
 
     if (index >= 0) {
-      // Service already in cart - block duplicate and show warning
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -157,7 +155,6 @@ class _POSScreenState extends State<POSScreen> {
       }
       return; // Don't add to cart
     } else {
-      // New item - add to cart
       setState(() {
         cart.add({
           "code": code,
@@ -227,6 +224,7 @@ class _POSScreenState extends State<POSScreen> {
         _selectedVehicleType = _vehicleTypeForCustomer;
       });
     } catch (e) {
+      // Ignore errors when data not found
     }
   }
 
@@ -244,20 +242,16 @@ class _POSScreenState extends State<POSScreen> {
       List<Customer> results = [];
 
       if (_searchType == 'plate') {
-        // License plate search - case-insensitive partial matching
         final normalizedQuery = query.trim().toUpperCase();
 
-        // Get all customers and filter by partial plate match
         final allCustomers = await CustomerManager.getAllCustomers();
         results = allCustomers.where((customer) {
           return customer.plateNumber.toUpperCase().contains(normalizedQuery);
         }).toList();
 
       } else {
-        // Name search - case-insensitive partial matching
         final normalizedQuery = query.trim().toLowerCase();
 
-        // Get all customers and filter by partial name match
         final allCustomers = await CustomerManager.getAllCustomers();
         results = allCustomers.where((customer) {
           return customer.name.toLowerCase().contains(normalizedQuery);
@@ -294,7 +288,6 @@ class _POSScreenState extends State<POSScreen> {
     });
   }
 
-  // ---------- NEW: Upsert by plateNumber in 'Customers' ----------
   Future<String> _saveOrUpdateCustomerByPlate(Customer base) async {
     final col = FirebaseFirestore.instance.collection('Customers');
     final plate = base.plateNumber.toUpperCase();
@@ -304,7 +297,6 @@ class _POSScreenState extends State<POSScreen> {
         .limit(1)
         .get();
 
-    // Common data to write
     final Map<String, dynamic> data = {
       'name': base.name,
       'plateNumber': plate,
@@ -325,7 +317,6 @@ class _POSScreenState extends State<POSScreen> {
       return doc.id; // created new
     }
   }
-  // ---------------------------------------------------------------
 
   void _saveCustomer() async {
     if (nameController.text.isEmpty || plateController.text.isEmpty) {
@@ -356,9 +347,7 @@ class _POSScreenState extends State<POSScreen> {
         currentCustomer = base.copyWith(id: customerId);
         _currentCustomerId = customerId;
         _vehicleTypeForCustomer = _selectedVehicleType;
-        // Close the new customer form to show selected customer display
         _showNewCustomerForm = false;
-        // Clear search results
         _searchResults.clear();
         isSearching = false;
         _hasSearched = false;
@@ -487,7 +476,7 @@ class _POSScreenState extends State<POSScreen> {
                         return ListTile(
                           leading: Icon(icon, color: color),
                           title: Text(vehicleType),
-                          subtitle: Text('₱${price.toStringAsFixed(2)}'),
+                          subtitle: Text(CurrencyFormatter.format(price)),
                           onTap: () async {
                             Navigator.pop(context);
                             await _addSingleCodeToCart(
@@ -586,7 +575,6 @@ class _POSScreenState extends State<POSScreen> {
                           mainAxisSize: MainAxisSize.min,
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                // Quality Selection
                 const Text(
                   'Select Quality:',
                   style: TextStyle(
@@ -712,7 +700,6 @@ class _POSScreenState extends State<POSScreen> {
                   ],
                 ),
                 const SizedBox(height: 24),
-                // Panel Selection
                 const Text(
                   'Number of Panels:',
                   style: TextStyle(
@@ -792,7 +779,6 @@ class _POSScreenState extends State<POSScreen> {
                   ],
                 ),
                 const SizedBox(height: 20),
-                // Price Summary
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -812,7 +798,7 @@ class _POSScreenState extends State<POSScreen> {
                             style: TextStyle(fontSize: 14, color: Colors.black87),
                           ),
                           Text(
-                            '₱${pricePerPanel.toStringAsFixed(2)}',
+                            CurrencyFormatter.format(pricePerPanel),
                             style: const TextStyle(
                               fontSize: 14,
                               fontWeight: FontWeight.w600,
@@ -834,7 +820,7 @@ class _POSScreenState extends State<POSScreen> {
                             ),
                           ),
                           Text(
-                            '₱${totalPrice.toStringAsFixed(2)}',
+                            CurrencyFormatter.format(totalPrice),
                             style: TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.bold,
@@ -961,7 +947,6 @@ class _POSScreenState extends State<POSScreen> {
   }) async {
     await addToCart(code, category, price);
     await _persistVehicleTypeIfNeeded(category, remember);
-    // Notification removed as requested
   }
 
   @override
@@ -1145,7 +1130,6 @@ class _POSScreenState extends State<POSScreen> {
                                         ],
                                       ),
                                     ),
-                                    // Add a subtle price indicator at the bottom
                                     Container(
                                       width: double.infinity,
                                       height: 3,
@@ -1179,7 +1163,6 @@ class _POSScreenState extends State<POSScreen> {
                 flex: responsive.isTablet ? 4 : 3,
                 child: Column(
               children: [
-                // Dynamic sizing based on search state
                 Expanded(
                   flex: _getCustomerFormFlex(),
                   child: _buildCustomerForm()
@@ -1385,8 +1368,6 @@ class _POSScreenState extends State<POSScreen> {
                   ),
                 ),
               ] else ...[
-                // Quick Search Mode
-                // Search Type Chooser
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -1511,7 +1492,6 @@ class _POSScreenState extends State<POSScreen> {
                   ],
                 ),
                 const SizedBox(height: 12),
-                // Search Field
                 Row(
                   children: [
                     Expanded(
@@ -1599,7 +1579,6 @@ class _POSScreenState extends State<POSScreen> {
                 ),
               ],
             ] else ...[
-              // New Customer Form Mode
               Row(
                 children: [
                   const Text(
@@ -1625,7 +1604,6 @@ class _POSScreenState extends State<POSScreen> {
               ),
               const SizedBox(height: 12),
 
-              // Plate Number Field (autofill trigger)
               TextField(
                 controller: plateController,
                 decoration: InputDecoration(
@@ -1650,7 +1628,6 @@ class _POSScreenState extends State<POSScreen> {
               ),
               const SizedBox(height: 12),
 
-              // Customer Name Field
               TextField(
                 controller: nameController,
                 decoration: InputDecoration(
@@ -1674,7 +1651,6 @@ class _POSScreenState extends State<POSScreen> {
               ),
               const SizedBox(height: 12),
 
-              // Email Field
               TextField(
                 controller: emailController,
                 decoration: InputDecoration(
@@ -1699,7 +1675,6 @@ class _POSScreenState extends State<POSScreen> {
               ),
               const SizedBox(height: 12),
 
-              // Contact Number Field
               TextField(
                 controller: phoneController,
                 decoration: InputDecoration(
@@ -1724,7 +1699,6 @@ class _POSScreenState extends State<POSScreen> {
               ),
               const SizedBox(height: 12),
 
-              // Vehicle Type Field
               DropdownButtonFormField<String>(
                 initialValue: _selectedVehicleType,
                 decoration: InputDecoration(
@@ -1760,7 +1734,6 @@ class _POSScreenState extends State<POSScreen> {
             ],
             const SizedBox(height: 16),
 
-            // Loading indicator
             if (isSearching && !_showNewCustomerForm)
               Container(
                 padding: const EdgeInsets.all(16),
@@ -1774,7 +1747,6 @@ class _POSScreenState extends State<POSScreen> {
                 ),
               ),
 
-            // Search Results
             if (searchResults.isNotEmpty && !_showNewCustomerForm && !isSearching)
               Container(
                 height: _getSearchResultsMaxHeight(),
@@ -1943,7 +1915,6 @@ class _POSScreenState extends State<POSScreen> {
                   ],
                 ),
               ),
-            // No results message
             if (searchResults.isEmpty && !_showNewCustomerForm && !isSearching && _hasSearched && plateController.text.trim().isNotEmpty)
               Container(
                 padding: const EdgeInsets.all(16),
@@ -1962,7 +1933,6 @@ class _POSScreenState extends State<POSScreen> {
 
             if ((searchResults.isNotEmpty || isSearching) && !_showNewCustomerForm) const SizedBox(height: 16),
 
-            // Service Time (always visible and separate from customer data)
             Container(
               padding: EdgeInsets.all(responsive.isTablet ? 10 : 12),
               decoration: BoxDecoration(
@@ -2008,7 +1978,6 @@ class _POSScreenState extends State<POSScreen> {
                         initialTime: _selectedTime ?? TimeOfDay.now(),
                       );
                       if (picked != null) {
-                        // Prevent selecting past time
                         final now = DateTime.now();
                         final selectedDateTime = DateTime(
                           now.year,
@@ -2018,7 +1987,6 @@ class _POSScreenState extends State<POSScreen> {
                           picked.minute,
                         );
 
-                        // Check if selected time is in the past
                         if (selectedDateTime.isBefore(now)) {
                           if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
@@ -2045,7 +2013,6 @@ class _POSScreenState extends State<POSScreen> {
             ),
             const SizedBox(height: 16),
 
-            // Save Customer Button (only in new customer form)
             if (_showNewCustomerForm) ...[
               const SizedBox(height: 16),
               SizedBox(
@@ -2107,7 +2074,6 @@ class _POSScreenState extends State<POSScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-          // Cart header with theme styling
           Container(
             width: double.infinity,
             padding: EdgeInsets.all(responsive.isTablet ? 10 : 12),
@@ -2160,7 +2126,6 @@ class _POSScreenState extends State<POSScreen> {
               ],
             ),
           ),
-          // Cart content
           Expanded(
             child: cart.isEmpty
                 ? Center(
@@ -2240,7 +2205,7 @@ class _POSScreenState extends State<POSScreen> {
                             ),
                           ),
                           subtitle: Text(
-                            "₱${price.toStringAsFixed(2)} x $qty = ₱${subtotal.toStringAsFixed(2)}",
+                            "${CurrencyFormatter.format(price)} x $qty = ${CurrencyFormatter.format(subtotal)}",
                             style: TextStyle(
                               fontSize: responsive.isTablet ? 10 : 11,
                               color: Colors.grey.shade600,
@@ -2269,7 +2234,6 @@ class _POSScreenState extends State<POSScreen> {
                     },
                   ),
           ),
-          // Cart footer with total and checkout
           Container(
             padding: EdgeInsets.all(responsive.isTablet ? 10 : 12),
             decoration: BoxDecoration(
@@ -2297,7 +2261,7 @@ class _POSScreenState extends State<POSScreen> {
                       ),
                     ),
                     Text(
-                      "₱${total.toStringAsFixed(2)}",
+                      CurrencyFormatter.format(total),
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: responsive.isTablet ? 16 : 18,
@@ -2396,7 +2360,6 @@ class _POSScreenState extends State<POSScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Header
                     Row(
                       children: [
                         Icon(Icons.receipt_long, size: 28, color: Colors.yellow.shade700),
@@ -2423,14 +2386,12 @@ class _POSScreenState extends State<POSScreen> {
                     const SizedBox(height: 12),
                     Divider(thickness: 1, color: Colors.grey.shade300),
                     const SizedBox(height: 12),
-                    // Scrollable Content
                     Flexible(
                       child: SingleChildScrollView(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            // Customer Information Section
                             if (nameController.text.trim().isNotEmpty || plateController.text.trim().isNotEmpty) ...[
                               Container(
                                 width: double.infinity,
@@ -2475,7 +2436,6 @@ class _POSScreenState extends State<POSScreen> {
                               ),
                               const SizedBox(height: 12),
                             ],
-                            // Services Section
                             Text(
                               "Services:",
                               style: TextStyle(
@@ -2513,7 +2473,7 @@ class _POSScreenState extends State<POSScreen> {
                                           ),
                                           const SizedBox(height: 2),
                                           Text(
-                                            "₱${price.toStringAsFixed(2)} x $qty",
+                                            "${CurrencyFormatter.format(price)} x $qty",
                                             style: TextStyle(
                                               fontSize: 12,
                                               color: Colors.grey.shade600,
@@ -2523,7 +2483,7 @@ class _POSScreenState extends State<POSScreen> {
                                       ),
                                     ),
                                     Text(
-                                      "₱${subtotal.toStringAsFixed(2)}",
+                                      CurrencyFormatter.format(subtotal),
                                       style: const TextStyle(
                                         fontWeight: FontWeight.bold,
                                         fontSize: 13,
@@ -2540,7 +2500,6 @@ class _POSScreenState extends State<POSScreen> {
                     const SizedBox(height: 12),
                     Divider(thickness: 2, color: Colors.black87),
                     const SizedBox(height: 8),
-                    // Fixed Payment Section (Always Visible)
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
@@ -2562,7 +2521,7 @@ class _POSScreenState extends State<POSScreen> {
                             ),
                           ),
                           Text(
-                            "₱${total.toStringAsFixed(2)}",
+                            CurrencyFormatter.format(total),
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 18,
@@ -2620,7 +2579,7 @@ class _POSScreenState extends State<POSScreen> {
                             ),
                           ),
                           Text(
-                            "₱${change.toStringAsFixed(2)}",
+                            CurrencyFormatter.format(change),
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 16,
@@ -2631,7 +2590,6 @@ class _POSScreenState extends State<POSScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
-            // Footer with buttons
             Row(
               children: [
                 Expanded(
@@ -2660,7 +2618,6 @@ class _POSScreenState extends State<POSScreen> {
                             final navigator = Navigator.of(context);
                             final cash = double.tryParse(cashController.text) ?? 0;
 
-                            // Extra validation: ensure cash is at least equal to total
                             if (cash < total) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
@@ -2746,7 +2703,6 @@ class _POSScreenState extends State<POSScreen> {
         serviceTime.minute,
       );
 
-      // 👤 Customer (unified shape) - prioritize text controllers as they are the source of truth
       final customerName = nameController.text.trim().isNotEmpty
           ? nameController.text.trim()
           : (currentCustomer != null && currentCustomer!.name.isNotEmpty
@@ -2780,7 +2736,6 @@ class _POSScreenState extends State<POSScreen> {
         "vehicleType": _vehicleTypeForCustomer,
       };
 
-      // 🧾 Services (unified name & fields)
       final services = cart.map((e) {
         final price = (e["price"] as num).toDouble();
         final qty = (e["quantity"] as int);
@@ -2794,22 +2749,19 @@ class _POSScreenState extends State<POSScreen> {
         };
       }).toList();
 
-      // 💵 Totals
       final double totalAmount = services.fold(
         0.0,
         (total, item) => total + (item["subtotal"] as double),
       );
 
-      // 📘 Transactions collection (uses "services")
       final payload = {
-        // Flatten customer data to match Transaction model
         "customerName": customerName,
         "customerId": customerMap["id"],
         "vehiclePlateNumber": plateNumber,
         "contactNumber": contactNumber,
         "vehicleType": _vehicleTypeForCustomer,
         "customer": customerMap, // Keep nested for backward compatibility
-        "services": services, // 🔑 unified key
+        "services": services, // unified key
         "subtotal": totalAmount,
         "total": totalAmount,
         "cash": cash,
@@ -2831,12 +2783,10 @@ class _POSScreenState extends State<POSScreen> {
         "createdAt": FieldValue.serverTimestamp(),
       };
 
-      // Save transaction
       final transactionRef = await FirebaseFirestore.instance
           .collection("Transactions")
           .add(payload);
 
-      // Create a corresponding approved booking (mirrors customer app schema)
       await _createBookingFromPOSTransaction(
         transactionId: transactionRef.id,
         txnDateTime: txnDateTime,
@@ -2879,7 +2829,6 @@ class _POSScreenState extends State<POSScreen> {
     String? assignedTeam,
   }) async {
     try {
-      // Use unified booking structure with scheduledDateTime (not selectedDateTime)
       final bookingData = {
         "userId": customerMap["id"] ?? "",
         "userEmail": customerMap["email"] ?? "",
@@ -2888,10 +2837,9 @@ class _POSScreenState extends State<POSScreen> {
         "contactNumber": customerMap["contactNumber"] ?? "",
         "vehicleType": customerMap["vehicleType"],
 
-        // 🔑 UNIFIED FIELD: scheduledDateTime (for Firestore queries to work)
         "scheduledDateTime": Timestamp.fromDate(txnDateTime),
 
-        "services": services, // 🔑 unified key
+        "services": services, // unified key
         "totalAmount": totalAmount, // Use totalAmount for consistency
 
         "status": "approved",
@@ -2906,6 +2854,7 @@ class _POSScreenState extends State<POSScreen> {
 
       await FirebaseFirestore.instance.collection("Bookings").add(bookingData);
     } catch (e) {
+      // Ignore errors when data not found
     }
   }
 
@@ -2917,63 +2866,51 @@ class _POSScreenState extends State<POSScreen> {
   String _getDisplayCode(String code, bool isSmallScreen) {
     if (!isSmallScreen) return code;
 
-    // Shorten PROMO codes to PR + number
     if (code.startsWith('PROMO')) {
       final number = code.replaceAll(RegExp(r'[^0-9]'), '');
       return 'PR$number';
     }
 
-    // Shorten UPGRADE codes to UP + number
     if (code.startsWith('UPGRADE')) {
       final number = code.replaceAll(RegExp(r'[^0-9]'), '');
       return 'UP$number';
     }
 
-    return code; // Keep EC codes and others as-is
+    return code;
   }
 
   List<String> _getVehicleTypeOptions() {
-    // Extract vehicle types from all services
     final Set<String> vehicleTypes = {};
     for (final service in _services) {
       vehicleTypes.addAll(service.prices.keys);
     }
-    // Remove 'Standard' and 'Premium' as they are for repaint service only, not vehicle types
     vehicleTypes.remove('Standard');
     vehicleTypes.remove('Premium');
     return vehicleTypes.toList()..sort();
   }
 
-  // Dynamic flex calculation for customer form
   int _getCustomerFormFlex() {
-    // If searching and have results or in search mode, give more space to customer form
     if ((isSearching || searchResults.isNotEmpty || _hasSearched) && !_showNewCustomerForm) {
       return 3; // Expanded for search results
     }
     return 2; // Normal size
   }
 
-  // Dynamic flex calculation for cart
   int _getCartFlex() {
-    // If searching and have results or in search mode, shrink cart
     if ((isSearching || searchResults.isNotEmpty || _hasSearched) && !_showNewCustomerForm) {
       return 1; // Smaller during search
     }
     return 2; // Normal size (reduced from 3)
   }
 
-  // Calculate max height for search results based on available space
   double _getSearchResultsMaxHeight() {
-    // When customer form is expanded (flex: 4), we have more space
     if ((isSearching || searchResults.isNotEmpty || _hasSearched) && !_showNewCustomerForm) {
-      // More space available - allow larger search results
       if (searchResults.length <= 2) {
         return searchResults.length * 90.0 + 60; // Individual item sizing
       } else {
         return 350; // Expanded max height for multiple results
       }
     }
-    // Normal state - smaller max height
     if (searchResults.length <= 2) {
       return searchResults.length * 80.0 + 60;
     }
@@ -3015,7 +2952,6 @@ class _POSScreenState extends State<POSScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      // Header
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
@@ -3042,7 +2978,6 @@ class _POSScreenState extends State<POSScreen> {
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 24),
-                      // Content
                       Row(
                         children: [
                           Expanded(
@@ -3165,62 +3100,89 @@ class _POSScreenState extends State<POSScreen> {
                         ],
                       ),
                       const SizedBox(height: 20),
-                      // Actions Row
                       Row(
                         children: [
                           Expanded(
                           child: ElevatedButton(
-                            onPressed: selectedTeam != null
+                            onPressed: (selectedTeam != null && !_isProcessingTransaction)
                                 ? () async {
-                                    final navigator = Navigator.of(context);
-                                    final team = selectedTeam!;
+                                    if (_isProcessingTransaction) return;
 
-                                    // Save cart data before clearing
-                                    final cartSnapshot = List<Map<String, dynamic>>.from(cart);
-                                    final totalSnapshot = total;
+                                    setState(() => _isProcessingTransaction = true);
 
-                                    await _saveTransactionToFirestore(
-                                      cash: cash,
-                                      change: change,
-                                      assignedTeam: team,
-                                    );
+                                    try {
+                                      final navigator = Navigator.of(context);
+                                      final team = selectedTeam!;
 
-                                    if (mounted) {
-                                      navigator.pop();
-                                      _showReceipt(
+                                      final cartSnapshot = List<Map<String, dynamic>>.from(cart);
+                                      final totalSnapshot = total;
+
+                                      await _saveTransactionToFirestore(
                                         cash: cash,
                                         change: change,
                                         assignedTeam: team,
-                                        cartItems: cartSnapshot,
-                                        total: totalSnapshot,
                                       );
+
+                                      if (mounted) {
+                                        navigator.pop();
+                                        _showReceipt(
+                                          cash: cash,
+                                          change: change,
+                                          assignedTeam: team,
+                                          cartItems: cartSnapshot,
+                                          total: totalSnapshot,
+                                        );
+                                      }
+                                    } finally {
+                                      if (mounted) {
+                                        setState(() => _isProcessingTransaction = false);
+                                      }
                                     }
                                   }
                                 : null,
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: selectedTeam != null ? Colors.yellow.shade700 : Colors.grey.shade300,
-                              foregroundColor: selectedTeam != null ? Colors.black87 : Colors.grey.shade600,
+                              backgroundColor: (selectedTeam != null && !_isProcessingTransaction) ? Colors.yellow.shade700 : Colors.grey.shade300,
+                              foregroundColor: (selectedTeam != null && !_isProcessingTransaction) ? Colors.black87 : Colors.grey.shade600,
                               padding: const EdgeInsets.symmetric(vertical: 20),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(12),
                                 side: BorderSide(
-                                  color: selectedTeam != null ? Colors.black54 : Colors.grey.shade400,
+                                  color: (selectedTeam != null && !_isProcessingTransaction) ? Colors.black54 : Colors.grey.shade400,
                                   width: 1,
                                 ),
                               ),
-                              elevation: selectedTeam != null ? 4 : 0,
+                              elevation: (selectedTeam != null && !_isProcessingTransaction) ? 4 : 0,
                             ),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.check_circle, size: 24),
-                                const SizedBox(width: 8),
-                                const Text(
-                                  "Confirm Assignment",
-                                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                                ),
-                              ],
-                            ),
+                            child: _isProcessingTransaction
+                                ? Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          valueColor: AlwaysStoppedAnimation<Color>(Colors.black87),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      const Text(
+                                        "Processing...",
+                                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                      ),
+                                    ],
+                                  )
+                                : Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.check_circle, size: 24),
+                                      const SizedBox(width: 8),
+                                      const Text(
+                                        "Confirm Assignment",
+                                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                      ),
+                                    ],
+                                  ),
                           ),
                         ),
                       ],
@@ -3272,7 +3234,6 @@ class _POSScreenState extends State<POSScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Header
                 Row(
                   children: [
                     Icon(Icons.receipt_long, size: 40, color: Colors.green.shade600),
@@ -3297,13 +3258,11 @@ class _POSScreenState extends State<POSScreen> {
                   ],
                 ),
                 const SizedBox(height: 32),
-                // Content
                 Expanded(
                   child: SingleChildScrollView(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Transaction Details Header
                         Container(
                           width: double.infinity,
                           padding: const EdgeInsets.all(20),
@@ -3347,7 +3306,6 @@ class _POSScreenState extends State<POSScreen> {
                           ),
                         ),
                         const SizedBox(height: 24),
-                        // Services List
                         Text(
                           "Services",
                           style: TextStyle(
@@ -3403,14 +3361,14 @@ class _POSScreenState extends State<POSScreen> {
                                 ),
                                 Expanded(
                                   child: Text(
-                                    "₱${price.toStringAsFixed(2)}",
+                                    CurrencyFormatter.format(price),
                                     textAlign: TextAlign.center,
                                     style: const TextStyle(fontSize: 16),
                                   ),
                                 ),
                                 Expanded(
                                   child: Text(
-                                    "₱${subtotal.toStringAsFixed(2)}",
+                                    CurrencyFormatter.format(subtotal),
                                     textAlign: TextAlign.end,
                                     style: const TextStyle(
                                       fontWeight: FontWeight.bold,
@@ -3423,7 +3381,6 @@ class _POSScreenState extends State<POSScreen> {
                           );
                         }),
                         const SizedBox(height: 24),
-                        // Payment Summary
                         Container(
                           width: double.infinity,
                           padding: const EdgeInsets.all(24),
@@ -3451,7 +3408,7 @@ class _POSScreenState extends State<POSScreen> {
                                 children: [
                                   const Text("Total:", style: TextStyle(fontSize: 18)),
                                   Text(
-                                    "₱${total.toStringAsFixed(2)}",
+                                    CurrencyFormatter.format(total),
                                     style: TextStyle(
                                       fontSize: 18,
                                       fontWeight: FontWeight.bold,
@@ -3466,7 +3423,7 @@ class _POSScreenState extends State<POSScreen> {
                                 children: [
                                   const Text("Cash:", style: TextStyle(fontSize: 18)),
                                   Text(
-                                    "₱${cash.toStringAsFixed(2)}",
+                                    CurrencyFormatter.format(cash),
                                     style: const TextStyle(fontSize: 18),
                                   ),
                                 ],
@@ -3477,7 +3434,7 @@ class _POSScreenState extends State<POSScreen> {
                                 children: [
                                   const Text("Change:", style: TextStyle(fontSize: 18)),
                                   Text(
-                                    "₱${change.toStringAsFixed(2)}",
+                                    CurrencyFormatter.format(change),
                                     style: TextStyle(
                                       fontSize: 18,
                                       fontWeight: FontWeight.bold,
@@ -3494,7 +3451,6 @@ class _POSScreenState extends State<POSScreen> {
                   ),
                 ),
                 const SizedBox(height: 24),
-                // Actions
                 Row(
                   children: [
                     Expanded(
@@ -3521,24 +3477,33 @@ class _POSScreenState extends State<POSScreen> {
                       child: ElevatedButton(
                         onPressed: () async {
                           try {
+                            // Validate cart items before generating PDF
+                            if (cartItems.isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('No items to print'),
+                                  backgroundColor: Colors.orange,
+                                ),
+                              );
+                              return;
+                            }
+
+                            // Create a safe copy of cart items to avoid modification during PDF generation
+                            final safeCartItems = List<Map<String, dynamic>>.from(
+                              cartItems.map((item) => Map<String, dynamic>.from(item))
+                            );
+
                             final pdf = pw.Document();
 
-                            // Generate transaction ID
                             final transactionId = 'TXN${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}';
                             final now = DateTime.now();
                             final dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
                             final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}";
 
-                            // Try to load fonts, fallback to default
+                            // Don't use custom fonts - use default to avoid font loading errors
                             pw.Font? regularFont;
                             pw.Font? boldFont;
-                            try {
-                              regularFont = pw.Font.ttf(await rootBundle.load("assets/fonts/Roboto-Regular.ttf"));
-                              boldFont = pw.Font.ttf(await rootBundle.load("assets/fonts/Roboto-Bold.ttf"));
-                            } catch (e) {
-                            }
 
-                            // Thermal receipt style - 80mm width (226.77 points)
                             pdf.addPage(
                               pw.Page(
                                 pageFormat: const PdfPageFormat(226.77, double.infinity, marginAll: 10),
@@ -3546,7 +3511,6 @@ class _POSScreenState extends State<POSScreen> {
                                   return pw.Column(
                                     crossAxisAlignment: pw.CrossAxisAlignment.center,
                                     children: [
-                                      // Header - Business Name
                                       pw.Text(
                                         "EC CARWASH",
                                         style: pw.TextStyle(
@@ -3574,10 +3538,8 @@ class _POSScreenState extends State<POSScreen> {
                                       ),
                                       pw.SizedBox(height: 8),
 
-                                      // Divider
                                       pw.Divider(thickness: 1),
 
-                                      // Transaction Info
                                       pw.Container(
                                         width: double.infinity,
                                         child: pw.Column(
@@ -3603,7 +3565,6 @@ class _POSScreenState extends State<POSScreen> {
 
                                       pw.Divider(thickness: 1),
 
-                                      // Items header
                                       pw.Container(
                                         width: double.infinity,
                                         child: pw.Row(
@@ -3666,12 +3627,11 @@ class _POSScreenState extends State<POSScreen> {
                                         color: PdfColors.black,
                                       ),
 
-                                      // Items
-                                      ...cartItems.map((item) {
-                                        final price = (item["price"] as num).toDouble();
-                                        final qty = (item["quantity"] ?? 0) as int;
+                                      ...safeCartItems.map((item) {
+                                        final price = ((item["price"] ?? 0) as num).toDouble();
+                                        final qty = ((item["quantity"] ?? 1) as num).toInt();
                                         final subtotal = price * qty;
-                                        final serviceName = item["name"]?.toString() ?? item["code"]?.toString() ?? "";
+                                        final serviceName = item["name"]?.toString() ?? item["code"]?.toString() ?? "Unknown Service";
                                         final serviceCategory = item["category"]?.toString() ?? "";
                                         return pw.Column(
                                           children: [
@@ -3681,7 +3641,6 @@ class _POSScreenState extends State<POSScreen> {
                                               child: pw.Column(
                                                 crossAxisAlignment: pw.CrossAxisAlignment.start,
                                                 children: [
-                                                  // Service name
                                                   pw.Text(
                                                     serviceName,
                                                     style: pw.TextStyle(
@@ -3691,7 +3650,6 @@ class _POSScreenState extends State<POSScreen> {
                                                     ),
                                                   ),
                                                   pw.SizedBox(height: 2),
-                                                  // Price row with qty, price, amount
                                                   pw.Row(
                                                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                                                     children: [
@@ -3752,7 +3710,6 @@ class _POSScreenState extends State<POSScreen> {
 
                                       pw.Divider(thickness: 1),
 
-                                      // Totals
                                       pw.Container(
                                         width: double.infinity,
                                         child: pw.Column(
@@ -3824,7 +3781,6 @@ class _POSScreenState extends State<POSScreen> {
 
                                       pw.Divider(thickness: 1),
 
-                                      // Footer
                                       pw.SizedBox(height: 4),
                                       pw.Text(
                                         "THANK YOU FOR YOUR BUSINESS!",

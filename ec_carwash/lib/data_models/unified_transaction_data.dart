@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class Transaction {
   final String? id;
   final String customerName;
+  final String? customerEmail; // Customer email for querying
   final String? customerId; // FK to Customers collection
   final String vehiclePlateNumber;
   final String? contactNumber;
@@ -42,6 +43,7 @@ class Transaction {
   Transaction({
     this.id,
     required this.customerName,
+    this.customerEmail,
     this.customerId,
     required this.vehiclePlateNumber,
     this.contactNumber,
@@ -68,6 +70,7 @@ class Transaction {
   Map<String, dynamic> toJson() {
     return {
       'customerName': customerName,
+      'customerEmail': customerEmail,
       'customerId': customerId,
       'vehiclePlateNumber': vehiclePlateNumber.toUpperCase(),
       'contactNumber': contactNumber,
@@ -96,6 +99,7 @@ class Transaction {
     return Transaction(
       id: docId,
       customerName: json['customerName'] ?? '',
+      customerEmail: json['customerEmail'],
       customerId: json['customerId'],
       vehiclePlateNumber: json['vehiclePlateNumber'] ?? '',
       contactNumber: json['contactNumber'],
@@ -128,6 +132,7 @@ class Transaction {
   Transaction copyWith({
     String? id,
     String? customerName,
+    String? customerEmail,
     String? customerId,
     String? vehiclePlateNumber,
     String? contactNumber,
@@ -153,6 +158,7 @@ class Transaction {
     return Transaction(
       id: id ?? this.id,
       customerName: customerName ?? this.customerName,
+      customerEmail: customerEmail ?? this.customerEmail,
       customerId: customerId ?? this.customerId,
       vehiclePlateNumber: vehiclePlateNumber ?? this.vehiclePlateNumber,
       contactNumber: contactNumber ?? this.contactNumber,
@@ -235,6 +241,7 @@ class TransactionManager {
   static Future<String> createFromBooking({
     required String bookingId,
     required String customerName,
+    String? customerEmail,
     required String? customerId,
     required String vehiclePlateNumber,
     required String? contactNumber,
@@ -248,6 +255,7 @@ class TransactionManager {
     final now = DateTime.now();
     final transaction = Transaction(
       customerName: customerName,
+      customerEmail: customerEmail,
       customerId: customerId,
       vehiclePlateNumber: vehiclePlateNumber,
       contactNumber: contactNumber,
@@ -263,7 +271,7 @@ class TransactionManager {
       assignedTeam: assignedTeam,
       teamCommission: teamCommission,
       transactionDate: DateTime(now.year, now.month, now.day),
-      transactionAt: scheduledDateTime,
+      transactionAt: now, // Use current completion time, not scheduled time
       createdAt: now,
       source: 'booking',
       bookingId: bookingId,

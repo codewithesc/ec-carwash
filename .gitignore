@@ -1,8 +1,23 @@
-# Documentation files (kept locally only)
-*.md
-!ec_carwash/README.md
-!ec_carwash/ios/Runner/Assets.xcassets/LaunchImage.imageset/README.md
-!functions/README.md
-
 # CSV files
 *.csv
+
+# Development/Debug files
+*.log
+*.bak
+*.tmp
+firebase-debug.log
+*-debug.log
+
+# Test/Debug scripts
+scripts/
+ec_carwash/scripts/
+functions/src/check-*.ts
+functions/src/migrate-*.ts
+
+# Excel/Office files
+*.xlsx
+*.xls
+
+# Firebase
+.firebase/
+.firebaserc

@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
+import '../../utils/currency_formatter.dart';
 
 class ExpensesScreen extends StatefulWidget {
   const ExpensesScreen({super.key});
@@ -144,7 +145,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          '₱${totalExpenses.toStringAsFixed(2)}',
+                          CurrencyFormatter.format(totalExpenses),
                           style: const TextStyle(
                             color: Colors.black87,
                             fontSize: 16,
@@ -209,7 +210,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
               const SizedBox(width: 8),
               _buildDateChip('Month', 'month'),
               const SizedBox(width: 8),
-              _buildDateChip('All', 'all'),
+              _buildCustomRangeChip(),
             ],
           ),
         ],
@@ -267,6 +268,123 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
     );
   }
 
+  Widget _buildCustomRangeChip() {
+    final isSelected = _selectedFilter == 'custom';
+    return ChoiceChip(
+      label: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.calendar_month, size: 16),
+          const SizedBox(width: 4),
+          Text(
+            isSelected && _startDate != null
+                ? DateFormat('MMMM yyyy').format(_startDate!)
+                : 'Custom Month',
+            style: TextStyle(
+              color: isSelected ? Colors.black87 : Colors.black.withValues(alpha: 0.7),
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              fontSize: 13,
+            ),
+          ),
+        ],
+      ),
+      selected: isSelected,
+      onSelected: (selected) {
+        _showMonthYearPicker();
+      },
+      selectedColor: Colors.yellow.shade700,
+      backgroundColor: Colors.grey.shade200,
+      side: BorderSide(
+        color: isSelected ? Colors.black87 : Colors.transparent,
+        width: 1.5,
+      ),
+    );
+  }
+
+  void _showMonthYearPicker() {
+    int? selectedMonth = _startDate?.month ?? DateTime.now().month;
+    int? selectedYear = _startDate?.year ?? DateTime.now().year;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text('Select Month', style: TextStyle(fontWeight: FontWeight.bold)),
+            content: SizedBox(
+              width: 300,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<int>(
+                    decoration: const InputDecoration(
+                      labelText: 'Month',
+                      border: OutlineInputBorder(),
+                    ),
+                    initialValue: selectedMonth,
+                    items: List.generate(12, (index) {
+                      final month = index + 1;
+                      return DropdownMenuItem(
+                        value: month,
+                        child: Text(DateFormat('MMMM').format(DateTime(2000, month))),
+                      );
+                    }),
+                    onChanged: (value) => setDialogState(() => selectedMonth = value),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<int>(
+                    decoration: const InputDecoration(
+                      labelText: 'Year',
+                      border: OutlineInputBorder(),
+                    ),
+                    initialValue: selectedYear,
+                    items: List.generate(5, (index) {
+                      final year = DateTime.now().year - index;
+                      return DropdownMenuItem(
+                        value: year,
+                        child: Text(year.toString()),
+                      );
+                    }),
+                    onChanged: (value) => setDialogState(() => selectedYear = value),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  if (selectedMonth != null && selectedYear != null) {
+                    // Set start date to first day of selected month
+                    final startOfMonth = DateTime(selectedYear!, selectedMonth!, 1);
+                    // Set end date to last day of selected month
+                    final endOfMonth = DateTime(selectedYear!, selectedMonth! + 1, 0, 23, 59, 59);
+
+                    setState(() {
+                      _selectedFilter = 'custom';
+                      _startDate = startOfMonth;
+                      _endDate = endOfMonth;
+                    });
+                    _loadExpenses();
+                    Navigator.pop(context);
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.yellow.shade700,
+                  foregroundColor: Colors.black87,
+                ),
+                child: const Text('Apply'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildExpenseCard(ExpenseData expense) {
     final categoryIcon = _getCategoryIcon(expense.category);
 
@@ -309,7 +427,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                   ),
                 ),
                 Text(
-                  '₱${expense.amount.toStringAsFixed(2)}',
+                  CurrencyFormatter.format(expense.amount),
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     color: Colors.black87,
@@ -445,7 +563,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
       fullInventory = await InventoryManager.getItems();
       inventoryItems = fullInventory.map((item) => item.name).toList();
     } catch (e) {
-      debugPrint('Error loading inventory: $e');
+      // Silently handle error
     }
 
     if (!mounted) return;
@@ -511,7 +629,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                     // Description - Dropdown for Supplies, TextField otherwise
                     if (selectedCategory == 'Supplies') ...[
                       DropdownButtonFormField<String>(
-                        value: selectedInventoryItem,
+                        initialValue: selectedInventoryItem,
                         decoration: const InputDecoration(
                           labelText: 'Select Item *',
                           border: OutlineInputBorder(),
@@ -658,7 +776,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                           : null,
                       inventoryItemId: inventoryItemId,
                       inventoryItemName: inventoryItemName,
-                      addedBy: 'Admin', // TODO: Get from auth
+                      addedBy: 'Admin',
                       createdAt: DateTime.now(),
                     );
 
@@ -675,7 +793,9 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
 
                     await _loadExpenses();
                     if (mounted) {
+                      // ignore: use_build_context_synchronously
                       Navigator.pop(context);
+                      // ignore: use_build_context_synchronously
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text(
@@ -689,6 +809,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                     }
                   } catch (e) {
                     if (mounted) {
+                      // ignore: use_build_context_synchronously
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(content: Text('Error adding expense: $e')),
                       );
@@ -754,7 +875,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                     pw.Text('Generated: ${DateFormat('MMM dd, yyyy HH:mm').format(DateTime.now())}'),
                     pw.SizedBox(height: 8),
                     pw.Text(
-                      'Total: P${totalExpenses.toStringAsFixed(2)}',
+                      'Total: PHP ${CurrencyFormatter.formatNoSymbol(totalExpenses)}',
                       style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold),
                     ),
                   ],
@@ -792,7 +913,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                         _buildTableCell(expense.description),
                         _buildTableCell(expense.category),
                         _buildTableCell(expense.vendor ?? '-'),
-                        _buildTableCell('P${expense.amount.toStringAsFixed(2)}'),
+                        _buildTableCell('PHP ${CurrencyFormatter.formatNoSymbol(expense.amount)}'),
                       ],
                     ),
                 ],
@@ -844,9 +965,13 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
               try {
                 await ExpenseManager.deleteExpense(expense.id!);
                 await _loadExpenses();
-                if (mounted) Navigator.pop(context);
+                if (mounted) {
+                  // ignore: use_build_context_synchronously
+                  Navigator.pop(context);
+                }
               } catch (e) {
                 if (mounted) {
+                  // ignore: use_build_context_synchronously
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(content: Text('Error deleting expense: $e')),
                   );

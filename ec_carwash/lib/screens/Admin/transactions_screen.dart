@@ -4,8 +4,8 @@ import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
-import 'package:flutter/services.dart' show rootBundle;
 import 'package:ec_carwash/data_models/unified_transaction_data.dart' as txn;
+import 'package:ec_carwash/utils/currency_formatter.dart';
 
 class TransactionsScreen extends StatefulWidget {
   const TransactionsScreen({super.key});
@@ -58,7 +58,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
             .where('transactionAt', isLessThanOrEqualTo: Timestamp.fromDate(_endDate!));
       }
 
-      final QuerySnapshot snapshot = await query.limit(100).get();
+      final QuerySnapshot snapshot = await query.get();
 
       setState(() {
         _transactions = snapshot.docs.map((doc) {
@@ -118,7 +118,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Text(
-                            '₱${totalRevenue.toStringAsFixed(2)}',
+                            CurrencyFormatter.format(totalRevenue),
                             style: const TextStyle(
                               color: Colors.black87,
                               fontSize: 16,
@@ -145,10 +145,10 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                 const SizedBox(width: 8),
                 _buildFilterChip('Month', 'month'),
                 const SizedBox(width: 8),
-                _buildFilterChip('All', 'all'),
+                _buildFilterChip('Custom Month', 'custom'),
                 const Spacer(),
                 ElevatedButton.icon(
-                  onPressed: _transactions.isEmpty ? null : _showPrintDialog,
+                  onPressed: _transactions.isEmpty ? null : () => _printCurrentTransactions(),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.yellow.shade700,
                     foregroundColor: Colors.black87,
@@ -207,15 +207,98 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
         ),
       ),
       selected: isSelected,
-      onSelected: (selected) {
-        setState(() => _selectedFilter = value);
-        _loadTransactions();
+      onSelected: (selected) async {
+        if (value == 'custom') {
+          // Show month/year picker dialog
+          await _showCustomMonthPicker();
+        } else {
+          setState(() => _selectedFilter = value);
+          _loadTransactions();
+        }
       },
       selectedColor: Colors.yellow.shade700,
       backgroundColor: Colors.grey.shade200,
       side: BorderSide(
         color: isSelected ? Colors.black87 : Colors.transparent,
         width: 1.5,
+      ),
+    );
+  }
+
+  Future<void> _showCustomMonthPicker() async {
+    int? selectedMonth;
+    int? selectedYear = DateTime.now().year;
+
+    await showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Select Custom Month'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<int>(
+                decoration: const InputDecoration(
+                  labelText: 'Month',
+                  border: OutlineInputBorder(),
+                ),
+                initialValue: selectedMonth,
+                items: List.generate(12, (index) {
+                  final month = index + 1;
+                  return DropdownMenuItem(
+                    value: month,
+                    child: Text(DateFormat('MMMM').format(DateTime(2000, month))),
+                  );
+                }),
+                onChanged: (value) => setDialogState(() => selectedMonth = value),
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<int>(
+                decoration: const InputDecoration(
+                  labelText: 'Year',
+                  border: OutlineInputBorder(),
+                ),
+                initialValue: selectedYear,
+                items: List.generate(5, (index) {
+                  final year = DateTime.now().year - index;
+                  return DropdownMenuItem(
+                    value: year,
+                    child: Text(year.toString()),
+                  );
+                }),
+                onChanged: (value) => setDialogState(() => selectedYear = value),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (selectedMonth != null && selectedYear != null) {
+                  setState(() {
+                    _selectedFilter = 'custom';
+                    _startDate = DateTime(selectedYear!, selectedMonth!, 1);
+                    _endDate = DateTime(selectedYear!, selectedMonth! + 1, 0, 23, 59, 59);
+                  });
+                  Navigator.pop(context);
+                  _loadTransactions();
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Please select both month and year')),
+                  );
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.yellow.shade700,
+                foregroundColor: Colors.black87,
+              ),
+              child: const Text('Apply'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -446,7 +529,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                             ),
                           ),
                           Text(
-                            '₱${transaction.total.toStringAsFixed(2)}',
+                            CurrencyFormatter.format(transaction.total),
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 19,
@@ -509,16 +592,35 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   // UNIFIED THERMAL RECEIPT (same format as POS screen)
   Future<void> _printSingleReceipt(txn.Transaction transaction) async {
     try {
+      // Validate transaction has services
+      if (transaction.services.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Transaction has no services to print'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+
+      // Validate services data integrity
+      for (final service in transaction.services) {
+        if (service.serviceName.isEmpty && service.serviceCode.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Transaction has invalid service data'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+          return;
+        }
+      }
+
       final pdf = pw.Document();
 
-      // Try to load fonts, fallback to default
+      // Don't use custom fonts - use default to avoid font loading errors
       pw.Font? regularFont;
       pw.Font? boldFont;
-      try {
-        regularFont = pw.Font.ttf(await rootBundle.load("assets/fonts/Roboto-Regular.ttf"));
-        boldFont = pw.Font.ttf(await rootBundle.load("assets/fonts/Roboto-Bold.ttf"));
-      } catch (e) {
-      }
 
       final transactionId = transaction.id?.substring(0, 12) ?? 'N/A';
       final dateStr = DateFormat('yyyy-MM-dd').format(transaction.transactionAt);
@@ -657,7 +759,11 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                 ),
 
                 // Items
-                ...transaction.services.map((item) {
+                ...transaction.services.where((item) {
+                  // Filter out invalid services
+                  return (item.serviceName.isNotEmpty || item.serviceCode.isNotEmpty) &&
+                         item.price > 0;
+                }).map((item) {
                   final price = item.price;
                   final qty = item.quantity;
                   final subtotal = price * qty;
@@ -909,26 +1015,10 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
     );
   }
 
-  void _showPrintDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => _PrintOptionsDialog(
-        onPrint: _printAllTransactions,
-        currentFilter: _selectedFilter,
-      ),
-    );
-  }
-
-  Future<void> _printAllTransactions({int? month, int? year}) async {
+  Future<void> _printCurrentTransactions() async {
     try {
-      List<txn.Transaction> transactionsToPrint = _transactions;
-
-      // If month/year specified, filter transactions
-      if (month != null && year != null) {
-        transactionsToPrint = _transactions.where((t) {
-          return t.transactionAt.month == month && t.transactionAt.year == year;
-        }).toList();
-      }
+      // Print only the currently displayed transactions
+      final List<txn.Transaction> transactionsToPrint = _transactions;
 
       if (transactionsToPrint.isEmpty) {
         if (mounted) {
@@ -941,6 +1031,14 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
 
       final pdf = pw.Document();
       final totalRevenue = transactionsToPrint.fold<double>(0.0, (total, t) => total + t.total);
+
+      // Determine filter label for print
+      String filterLabel = _selectedFilter;
+      if (_selectedFilter == 'custom' && _startDate != null && _endDate != null) {
+        filterLabel = '${DateFormat('MMM dd, yyyy').format(_startDate!)} - ${DateFormat('MMM dd, yyyy').format(_endDate!)}';
+      } else {
+        filterLabel = filterLabel[0].toUpperCase() + filterLabel.substring(1);
+      }
 
       pdf.addPage(
         pw.MultiPage(
@@ -960,10 +1058,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                     pw.SizedBox(height: 8),
                     pw.Text('TRANSACTION SUMMARY', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
                     pw.SizedBox(height: 8),
-                    if (month != null && year != null)
-                      pw.Text('Period: ${DateFormat('MMMM yyyy').format(DateTime(year, month))}')
-                    else
-                      pw.Text('Filter: $_selectedFilter'),
+                    pw.Text('Filter: $filterLabel'),
                     pw.Text('Generated: ${DateFormat('MMM dd, yyyy HH:mm').format(DateTime.now())}'),
                     pw.SizedBox(height: 8),
                     pw.Text('Total Transactions: ${transactionsToPrint.length}', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
@@ -1032,123 +1127,6 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
           fontWeight: isHeader ? pw.FontWeight.bold : pw.FontWeight.normal,
         ),
       ),
-    );
-  }
-}
-
-// Print Options Dialog Widget
-class _PrintOptionsDialog extends StatefulWidget {
-  final Function({int? month, int? year}) onPrint;
-  final String currentFilter;
-
-  const _PrintOptionsDialog({
-    required this.onPrint,
-    required this.currentFilter,
-  });
-
-  @override
-  State<_PrintOptionsDialog> createState() => _PrintOptionsDialogState();
-}
-
-class _PrintOptionsDialogState extends State<_PrintOptionsDialog> {
-  int? _selectedMonth;
-  int? _selectedYear;
-  bool _useCustomDate = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Print Transaction Summary', style: TextStyle(fontWeight: FontWeight.bold)),
-      content: SizedBox(
-        width: 400,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Current Filter: ${widget.currentFilter}', style: const TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 16),
-            SwitchListTile(
-              title: const Text('Select specific month/year'),
-              value: _useCustomDate,
-              onChanged: (value) {
-                setState(() {
-                  _useCustomDate = value;
-                  if (!value) {
-                    _selectedMonth = null;
-                    _selectedYear = null;
-                  }
-                });
-              },
-            ),
-            if (_useCustomDate) ...[
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: DropdownButtonFormField<int>(
-                      decoration: const InputDecoration(
-                        labelText: 'Month',
-                        border: OutlineInputBorder(),
-                      ),
-                      value: _selectedMonth,
-                      items: List.generate(12, (index) {
-                        final month = index + 1;
-                        return DropdownMenuItem(
-                          value: month,
-                          child: Text(DateFormat('MMMM').format(DateTime(2000, month))),
-                        );
-                      }),
-                      onChanged: (value) => setState(() => _selectedMonth = value),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: DropdownButtonFormField<int>(
-                      decoration: const InputDecoration(
-                        labelText: 'Year',
-                        border: OutlineInputBorder(),
-                      ),
-                      value: _selectedYear,
-                      items: List.generate(5, (index) {
-                        final year = DateTime.now().year - index;
-                        return DropdownMenuItem(
-                          value: year,
-                          child: Text(year.toString()),
-                        );
-                      }),
-                      onChanged: (value) => setState(() => _selectedYear = value),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton.icon(
-          onPressed: () {
-            if (_useCustomDate && (_selectedMonth == null || _selectedYear == null)) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Please select both month and year')),
-              );
-              return;
-            }
-            Navigator.pop(context);
-            widget.onPrint(month: _selectedMonth, year: _selectedYear);
-          },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.yellow.shade700,
-            foregroundColor: Colors.black87,
-          ),
-          icon: const Icon(Icons.print),
-          label: const Text('Print', style: TextStyle(fontWeight: FontWeight.bold)),
-        ),
-      ],
     );
   }
 }

@@ -1,6 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter/foundation.dart';
 import 'notification_data.dart';
+import 'unified_transaction_data.dart' as txn_model;
 
 /// Unified Booking Service structure (same as TransactionService)
 class BookingService {
@@ -245,6 +245,16 @@ class BookingManager {
   /// Create a new booking
   static Future<String> createBooking(Booking booking) async {
     try {
+      // VALIDATION: Ensure userId and userEmail are populated for customer-app bookings
+      if (booking.source == 'customer-app') {
+        if (booking.userId.isEmpty || booking.userEmail.isEmpty) {
+          throw Exception(
+            'Customer bookings must have userId and userEmail. '
+            'Got userId="${booking.userId}", userEmail="${booking.userEmail}"'
+          );
+        }
+      }
+
       final docRef = await _firestore
           .collection(_collection)
           .add(booking.toJson());
@@ -356,6 +366,16 @@ class BookingManager {
       // Add completedAt timestamp when marking as completed
       if (status == 'completed') {
         updateData['completedAt'] = FieldValue.serverTimestamp();
+
+        // Create Transaction record when booking is completed
+        // BUT only if transaction doesn't already exist (to avoid duplicates for POS bookings)
+        if (bookingData['transactionId'] == null) {
+          try {
+            await _createTransactionFromBooking(bookingId, bookingData);
+          } catch (e) {
+            // Continue with status update even if transaction creation fails
+          }
+        }
       }
 
       await _firestore.collection(_collection).doc(bookingId).update(updateData);
@@ -370,7 +390,7 @@ class BookingManager {
           case 'approved':
             notificationTitle = 'Booking Confirmed!';
             notificationMessage =
-                'Your booking has been approved. We look forward to serving you!';
+                'Your booking has been successfully approved. Kindly ensure timely arrival, as bookings will be automatically cancelled if you are more than 10 minutes late.';
             notificationType = 'booking_approved';
             break;
           case 'in-progress':
@@ -386,7 +406,7 @@ class BookingManager {
             break;
           case 'cancelled':
             notificationTitle = 'Booking Cancelled';
-            notificationMessage = 'Your booking has been cancelled.';
+            notificationMessage = 'Your booking has been cancelled. The time slot may have been fully booked (both teams occupied). Please book a new time slot.';
             notificationType = 'booking_cancelled';
             break;
         }
@@ -491,9 +511,6 @@ class BookingManager {
             .get();
       } catch (indexError) {
         // Fallback: Get all bookings and filter in memory
-        debugPrint(
-          'Composite index not available, filtering in memory: $indexError',
-        );
         query = await _firestore.collection(_collection).get();
       }
 
@@ -516,7 +533,6 @@ class BookingManager {
 
       return todayBookings;
     } catch (e) {
-      debugPrint('Failed to get today\'s bookings: $e');
       throw Exception('Failed to get today\'s bookings: $e');
     }
   }
@@ -560,7 +576,6 @@ class BookingManager {
 
       return count;
     } catch (e) {
-      debugPrint('Failed to get team bookings count: $e');
       return 0;
     }
   }
@@ -580,7 +595,6 @@ class BookingManager {
 
       return teamACount >= 2 && teamBCount >= 2;
     } catch (e) {
-      debugPrint('Failed to check if time slot is full: $e');
       return false;
     }
   }
@@ -640,6 +654,155 @@ class BookingManager {
       });
     } catch (e) {
       throw Exception('Failed to assign team: $e');
+    }
+  }
+
+  /// Create Transaction record from completed booking
+  static Future<void> _createTransactionFromBooking(
+    String bookingId,
+    Map<String, dynamic> bookingData,
+  ) async {
+    try {
+      // CRITICAL: Check if transaction already exists for this booking
+      // This prevents duplicate transactions when booking is marked as paid AND completed
+      final existingTransaction = await _firestore
+          .collection('Transactions')
+          .where('bookingId', isEqualTo: bookingId)
+          .limit(1)
+          .get();
+
+      if (existingTransaction.docs.isNotEmpty) {
+        // Transaction already exists, just update the booking reference if missing
+        final existingTransactionId = existingTransaction.docs.first.id;
+        if (bookingData['transactionId'] == null) {
+          await _firestore.collection(_collection).doc(bookingId).update({
+            'transactionId': existingTransactionId,
+          });
+        }
+        return; // Don't create duplicate
+      }
+
+      final now = DateTime.now();
+      final services = (bookingData['services'] as List<dynamic>? ?? [])
+          .map((s) => s as Map<String, dynamic>)
+          .toList();
+
+      // Convert BookingService to TransactionService format
+      final transactionServices = services.map((service) {
+        return txn_model.TransactionService(
+          serviceCode: service['serviceCode'] ?? '',
+          serviceName: service['serviceName'] ?? '',
+          vehicleType: service['vehicleType'] ?? '',
+          price: (service['price'] ?? 0).toDouble(),
+          quantity: service['quantity'] ?? 1,
+        );
+      }).toList();
+
+      final totalAmount = transactionServices.fold<double>(
+        0.0,
+        (total, service) => total + (service.price * service.quantity),
+      );
+
+      final teamCommission = (bookingData['assignedTeam'] != null &&
+              bookingData['assignedTeam'] != 'Unassigned')
+          ? totalAmount * 0.35
+          : 0.0;
+
+      // Extract vehicle type from bookingData or first service's vehicleType
+      String? vehicleType = bookingData['vehicleType'];
+      if (vehicleType == null || vehicleType.isEmpty) {
+        // Fallback: try to get from services
+        if (transactionServices.isNotEmpty && transactionServices.first.vehicleType.isNotEmpty) {
+          vehicleType = transactionServices.first.vehicleType;
+        }
+      }
+
+      // CRITICAL: Ensure customerId is always present
+      // If missing, try to resolve it from the customer's email
+      String? customerId = bookingData['customerId'];
+      if (customerId == null || customerId.isEmpty) {
+        final userEmail = bookingData['userEmail'] as String?;
+        final userName = bookingData['userName'] as String?;
+
+        if (userEmail != null && userEmail.isNotEmpty) {
+          try {
+            final customerQuery = await _firestore
+                .collection('Customers')
+                .where('email', isEqualTo: userEmail)
+                .limit(1)
+                .get();
+
+            if (customerQuery.docs.isNotEmpty) {
+              // Layer 1: Found existing customer
+              customerId = customerQuery.docs.first.id;
+              // Update the booking with the customerId for future reference
+              await _firestore.collection(_collection).doc(bookingId).update({
+                'customerId': customerId,
+              });
+            } else {
+              // Layer 2: Create Customer document if missing
+              final newCustomerRef = await _firestore.collection('Customers').add({
+                'email': userEmail,
+                'name': userName ?? 'Customer',
+                'phone': bookingData['contactNumber'] ?? '',
+                'plateNumber': bookingData['plateNumber'] ?? '',
+                'createdAt': FieldValue.serverTimestamp(),
+                'vehicleType': bookingData['vehicleType'] ?? '',
+              });
+              customerId = newCustomerRef.id;
+
+              // Update the booking with the new customerId
+              await _firestore.collection(_collection).doc(bookingId).update({
+                'customerId': customerId,
+              });
+            }
+          } catch (e) {
+            // Error handled by validation check below
+          }
+        }
+      }
+
+      // VALIDATION: Do not create transaction if customerId is still missing
+      if (customerId == null || customerId.isEmpty) {
+        throw Exception('Cannot create transaction without customerId. Please ensure customer data is valid.');
+      }
+
+      final transaction = txn_model.Transaction(
+        customerName: bookingData['userName'] ?? 'Customer',
+        customerId: customerId,
+        vehiclePlateNumber: bookingData['plateNumber'] ?? '',
+        contactNumber: bookingData['contactNumber'],
+        vehicleType: vehicleType,
+        services: transactionServices,
+        subtotal: totalAmount,
+        discount: 0.0,
+        total: totalAmount,
+        cash: totalAmount,
+        change: 0.0,
+        paymentMethod: bookingData['paymentStatus'] == 'paid' ? 'cash' : 'pending',
+        paymentStatus: bookingData['paymentStatus'] ?? 'paid',
+        assignedTeam: bookingData['assignedTeam'],
+        teamCommission: teamCommission,
+        transactionDate: now,
+        transactionAt: (bookingData['completedAt'] as Timestamp?)?.toDate() ?? now,
+        createdAt: now,
+        source: 'booking',
+        bookingId: bookingId,
+        status: 'completed',
+        notes: 'Auto-generated from booking completion',
+      );
+
+      // Save transaction to Firestore
+      final transactionRef = await _firestore
+          .collection('Transactions')
+          .add(transaction.toJson());
+
+      // Update booking with transaction reference
+      await _firestore.collection(_collection).doc(bookingId).update({
+        'transactionId': transactionRef.id,
+      });
+    } catch (e) {
+      rethrow;
     }
   }
 }

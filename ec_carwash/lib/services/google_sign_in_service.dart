@@ -7,10 +7,8 @@ class GoogleSignInService {
 
   static Future<User?> signInWithGoogle() async {
     try {
-      print('Starting Google Sign-in process...');
-
       if (kIsWeb) {
-        // ✅ Web flow (no serverClientId!)
+        // Web flow (no serverClientId!)
         GoogleAuthProvider googleProvider = GoogleAuthProvider();
         googleProvider.addScope('email');
         googleProvider.setCustomParameters({'prompt': 'select_account'});
@@ -19,12 +17,9 @@ class GoogleSignInService {
           googleProvider,
         );
 
-        print(
-          'Firebase sign-in successful (web): ${userCredential.user?.email}',
-        );
         return userCredential.user;
       } else {
-        // ✅ Android/iOS/Desktop flow
+        // Android/iOS/Desktop flow
         final GoogleSignIn googleSignIn = GoogleSignIn(
           scopes: ['email'],
           serverClientId:
@@ -33,7 +28,6 @@ class GoogleSignInService {
 
         final GoogleSignInAccount? googleUser = await googleSignIn.signIn();
         if (googleUser == null) {
-          print('User canceled sign-in');
           return null;
         }
 
@@ -49,17 +43,12 @@ class GoogleSignInService {
           credential,
         );
 
-        print(
-          'Firebase sign-in successful (mobile/desktop): ${userCredential.user?.email}',
-        );
         return userCredential.user;
       }
     } on FirebaseAuthException catch (e) {
-      print('FirebaseAuthException: ${e.code} - ${e.message}');
       // Re-throw with more details so the UI can show specific errors
       throw Exception('Firebase Auth Error [${e.code}]: ${e.message}');
     } catch (e) {
-      print('Error signing in with Google: $e');
       // Re-throw the error instead of returning null so we get better error messages
       rethrow;
     }

@@ -35,7 +35,6 @@ class _CustomerHomeState extends State<CustomerHome> {
       await FCMTokenManager.initializeToken();
     } catch (e) {
       // Silently fail - notification setup is not critical
-      debugPrint('Failed to initialize notifications: $e');
     }
   }
 
@@ -82,6 +81,70 @@ class _CustomerHomeState extends State<CustomerHome> {
     } catch (_) {
       return rawScheduledDateTime.toString();
     }
+  }
+
+  void _showServiceDetailsDialog(List<dynamic> services) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.build, color: Colors.orange),
+            SizedBox(width: 12),
+            Text('Service Details'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: services.isEmpty
+              ? const Text('No services found')
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: services.map((service) {
+                    final serviceData = service as Map<String, dynamic>;
+                    final serviceName = serviceData['serviceName'] ?? 'N/A';
+                    final vehicleType = serviceData['vehicleType'] ?? 'N/A';
+                    final price = serviceData['price'] ?? 0;
+                    final quantity = serviceData['quantity'] ?? 1;
+
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      elevation: 2,
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              serviceName,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text('Vehicle Type: $vehicleType'),
+                            Text('Price: PHP ${price.toStringAsFixed(2)}'),
+                            if (quantity > 1) Text('Quantity: $quantity'),
+                          ],
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.yellow[700],
+              foregroundColor: Colors.black,
+            ),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _cancelBooking(String bookingId) async {
@@ -324,10 +387,19 @@ class _CustomerHomeState extends State<CustomerHome> {
                       children: [
                         Text("Date: $formattedDateTime"),
                         const SizedBox(height: 4),
-                        Text(
-                          services.isNotEmpty
-                              ? "Services: ${services.map((s) => (s as Map<String, dynamic>)["serviceName"] ?? "").join(", ")}"
-                              : "Services: N/A",
+                        GestureDetector(
+                          onTap: () {
+                            _showServiceDetailsDialog(services);
+                          },
+                          child: Text(
+                            services.isNotEmpty
+                                ? "Services: ${services.map((s) => (s as Map<String, dynamic>)["serviceName"] ?? "").join(", ")}"
+                                : "Services: N/A",
+                            style: const TextStyle(
+                              decoration: TextDecoration.underline,
+                              color: Colors.blue,
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -367,25 +439,35 @@ class _CustomerHomeState extends State<CustomerHome> {
                       }
                     },
                   ),
-                  if (status == 'approved')
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: () {
-                            final docId = bookings[index].id;
-                            _cancelBooking(docId);
-                          },
-                          icon: const Icon(Icons.cancel, size: 18),
-                          label: const Text('Cancel Booking'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red[600],
-                            foregroundColor: Colors.white,
-                          ),
-                        ),
-                      ),
+                  if (status == 'approved') ...[
+                    Builder(
+                      builder: (context) {
+                        final paymentStatus = booking['paymentStatus'] ?? 'pending';
+                        // Only show cancel button if payment is pending
+                        if (paymentStatus != 'paid') {
+                          return Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                onPressed: () {
+                                  final docId = bookings[index].id;
+                                  _cancelBooking(docId);
+                                },
+                                icon: const Icon(Icons.cancel, size: 18),
+                                label: const Text('Cancel Booking'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.red[600],
+                                  foregroundColor: Colors.white,
+                                ),
+                              ),
+                            ),
+                          );
+                        }
+                        return const SizedBox.shrink();
+                      },
                     ),
+                  ],
                 ],
               ),
             );

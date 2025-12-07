@@ -1,9 +1,152 @@
-import { onDocumentUpdated, onDocumentDeleted, onDocumentCreated } from "firebase-functions/v2/firestore";
+import {onDocumentUpdated, onDocumentDeleted, onDocumentCreated} from "firebase-functions/v2/firestore";
+import {onRequest} from "firebase-functions/v2/https";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
 
 // Initialize Firebase Admin SDK
 admin.initializeApp();
+
+// Export migration and diagnostic functions
+export {migrateBookingUserFields} from "./migrate-bookings-http";
+export {checkCompletedBookings} from "./check-completed";
+
+/**
+ * Backfill customerEmail in Transactions from linked Bookings
+ * This is more reliable than using Customer documents since Customer docs may be deleted
+ * Call with: curl https://REGION-PROJECT.cloudfunctions.net/backfillCustomerEmails
+ */
+export const backfillCustomerEmails = onRequest({timeoutSeconds: 540}, async (req, res) => {
+  logger.info("🔧 Backfilling customerEmail from Bookings");
+
+  try {
+    const db = admin.firestore();
+
+    // Get all transactions WITHOUT customerEmail
+    const allTransactions = await db.collection("Transactions").get();
+    const missingEmail = allTransactions.docs.filter((doc) => {
+      const email = doc.data().customerEmail;
+      return !email || email.toString().trim() === "";
+    });
+
+    logger.info(`Total: ${allTransactions.docs.length}, Missing: ${missingEmail.length}`);
+
+    let updated = 0;
+    let failed = 0;
+    let noBooking = 0;
+
+    for (const txDoc of missingEmail) {
+      const txData = txDoc.data();
+
+      try {
+        // Strategy 1: Find Booking by transactionId reference
+        const bookingsWithTxId = await db.collection("Bookings")
+          .where("transactionId", "==", txDoc.id)
+          .limit(1)
+          .get();
+
+        if (!bookingsWithTxId.empty) {
+          const booking = bookingsWithTxId.docs[0].data();
+          const email = booking.userEmail;
+
+          if (email && email.trim() !== "") {
+            await txDoc.ref.update({customerEmail: email});
+            logger.info(`Updated ${txDoc.id} with ${email} (via transactionId)`);
+            updated++;
+            continue;
+          }
+        }
+
+        // Strategy 2: Find Booking by matching plate + date
+        const plate = txData.vehiclePlateNumber;
+        const txDate = txData.transactionAt?.toDate?.();
+
+        if (plate && txDate) {
+          const dayBefore = new Date(txDate.getTime() - 24 * 60 * 60 * 1000);
+          const dayAfter = new Date(txDate.getTime() + 24 * 60 * 60 * 1000);
+
+          const bookingsByPlate = await db.collection("Bookings")
+            .where("plateNumber", "==", plate)
+            .where("scheduledDateTime", ">=", admin.firestore.Timestamp.fromDate(dayBefore))
+            .where("scheduledDateTime", "<=", admin.firestore.Timestamp.fromDate(dayAfter))
+            .get();
+
+          if (!bookingsByPlate.empty) {
+            const booking = bookingsByPlate.docs[0].data();
+            const email = booking.userEmail;
+
+            if (email && email.trim() !== "") {
+              await txDoc.ref.update({customerEmail: email});
+              logger.info(`Updated ${txDoc.id} with ${email} (via plate+date)`);
+              updated++;
+              continue;
+            }
+          }
+        }
+
+        noBooking++;
+        logger.warn(`No booking found for transaction ${txDoc.id}`);
+      } catch (error) {
+        failed++;
+        logger.error(`Error processing ${txDoc.id}:`, error);
+      }
+    }
+
+    const summary = {
+      total: allTransactions.docs.length,
+      missing: missingEmail.length,
+      updated,
+      noBooking,
+      failed,
+    };
+
+    logger.info("Backfill complete:", summary);
+    res.status(200).json({success: true, summary});
+  } catch (error) {
+    logger.error("Backfill failed:", error);
+    res.status(500).json({success: false, error: String(error)});
+  }
+});
+
+/**
+ * Manual error logging endpoint for web platform
+ * Call from web app when automatic Firestore logging fails
+ */
+export const logWebError = onRequest(async (req, res) => {
+  // Allow CORS from your domain
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Methods", "POST");
+  res.set("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    res.status(204).send("");
+    return;
+  }
+
+  try {
+    const {error, stackTrace, context, userId, userEmail, additionalData, fatal} = req.body;
+
+    const db = admin.firestore();
+    await db.collection("ErrorLogs").add({
+      error: error || "Unknown error",
+      stackTrace: stackTrace || null,
+      context: context || "unknown",
+      userId: userId || "anonymous",
+      userEmail: userEmail || "unknown",
+      platform: "web",
+      fatal: fatal || false,
+      additionalData: additionalData || {},
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      userAgent: req.headers["user-agent"] || "unknown",
+      ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown",
+    });
+
+    logger.info(`Web error logged: ${context || "unknown"}`, {userId, error});
+    res.status(200).json({success: true});
+  } catch (error) {
+    logger.error("Failed to log web error:", error);
+    res.status(500).json({success: false, error: String(error)});
+  }
+});
 
 // Preferred locale/timezone for human-readable times in messages
 const DEFAULT_LOCALE = process.env.APP_LOCALE || "en-PH";
@@ -20,7 +163,6 @@ export const sendBookingNotification = onDocumentUpdated(
     const beforeData = event.data?.before.data();
     const afterData = event.data?.after.data();
     if (!beforeData || !afterData) {
-      logger.warn(`Booking ${bookingId}: Missing data`);
       return;
     }
 
@@ -30,19 +172,13 @@ export const sendBookingNotification = onDocumentUpdated(
     const scheduleChanged = !!(beforeTs && afterTs && beforeTs.toMillis() !== afterTs.toMillis());
 
     if (!statusChanged && !scheduleChanged) {
-      logger.info(`Booking ${bookingId}: No relevant changes (status/schedule). Skipping notification.`);
       return;
     }
 
     const newStatus = afterData.status;
     const userEmail = afterData.userEmail as string | undefined;
 
-    if (statusChanged) {
-      logger.info(`Booking ${bookingId}: Status changed from ${beforeData.status} to ${newStatus}`);
-    }
-
     if (!userEmail) {
-      logger.warn(`Booking ${bookingId}: No user email found, skipping notification`);
       return;
     }
 
@@ -54,7 +190,6 @@ export const sendBookingNotification = onDocumentUpdated(
         .get();
 
       if (userSnapshot.empty) {
-        logger.warn(`No user document found for email: ${userEmail}`);
         return;
       }
 
@@ -62,7 +197,6 @@ export const sendBookingNotification = onDocumentUpdated(
       const fcmToken = userData.fcmToken as string | undefined;
 
       if (!fcmToken) {
-        logger.warn(`No FCM token found for user: ${userEmail}`);
         return;
       }
 
@@ -74,7 +208,7 @@ export const sendBookingNotification = onDocumentUpdated(
         switch (newStatus) {
         case "approved":
           notificationTitle = "Booking Confirmed!";
-          notificationBody = "Your booking has been approved. We look forward to serving you!";
+          notificationBody = "Your booking has been successfully approved. Kindly ensure timely arrival, as bookings will be automatically cancelled if you are more than 10 minutes late.";
           notificationType = "booking_approved";
           break;
         case "in-progress":
@@ -93,21 +227,20 @@ export const sendBookingNotification = onDocumentUpdated(
           notificationType = "booking_cancelled";
           break;
         default:
-          logger.info(`Booking ${bookingId}: Status '${newStatus}' does not trigger notification`);
           return;
         }
       } else if (scheduleChanged) {
-        const when = afterTs
-          ? new Date(afterTs.toMillis()).toLocaleString(DEFAULT_LOCALE, {
-              timeZone: DEFAULT_TIME_ZONE,
-              year: "numeric",
-              month: "short",
-              day: "2-digit",
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: true,
-            })
-          : "a new time";
+        const when = afterTs ?
+          new Date(afterTs.toMillis()).toLocaleString(DEFAULT_LOCALE, {
+            timeZone: DEFAULT_TIME_ZONE,
+            year: "numeric",
+            month: "short",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: true,
+          }) :
+          "a new time";
         notificationTitle = "Booking Rescheduled";
         notificationBody = `Your booking has been rescheduled to ${when}.`;
         notificationType = "booking_rescheduled";
@@ -126,13 +259,11 @@ export const sendBookingNotification = onDocumentUpdated(
           rescheduledAt: afterTs ? afterTs.toMillis().toString() : "",
         },
         token: fcmToken,
-        android: { notification: { channelId: "booking_channel", priority: "high", sound: "default" } },
-        apns: { payload: { aps: { sound: "default", badge: 1 } } },
+        android: {notification: {channelId: "booking_channel", priority: "high", sound: "default"}},
+        apns: {payload: {aps: {sound: "default", badge: 1}}},
       };
 
-      const response = await admin.messaging().send(message);
-      logger.info(`Successfully sent notification to ${userEmail}: ${response}`);
-
+      await admin.messaging().send(message);
     } catch (error) {
       logger.error(`Error sending notification for booking ${bookingId}:`, error);
     }
@@ -158,12 +289,10 @@ export const sendNotificationOnCreate = onDocumentCreated(
       "general",
     ];
     if (!allowed.includes(type)) {
-      logger.info(`Notification ${event.params.notificationId}: Type '${type}' not pushed`);
       return;
     }
 
     if (!userEmail) {
-      logger.warn(`Notification ${event.params.notificationId}: Missing userId/email`);
       return;
     }
 
@@ -176,13 +305,11 @@ export const sendNotificationOnCreate = onDocumentCreated(
         .get();
 
       if (userSnapshot.empty) {
-        logger.warn(`Notification ${event.params.notificationId}: No user doc for ${userEmail}`);
         return;
       }
 
       const fcmToken = userSnapshot.docs[0].data().fcmToken as string | undefined;
       if (!fcmToken) {
-        logger.warn(`Notification ${event.params.notificationId}: No FCM token for ${userEmail}`);
         return;
       }
 
@@ -205,12 +332,11 @@ export const sendNotificationOnCreate = onDocumentCreated(
           },
         },
         apns: {
-          payload: { aps: { sound: "default", badge: 1 } },
+          payload: {aps: {sound: "default", badge: 1}},
         },
       };
 
-      const res = await admin.messaging().send(payload as any);
-      logger.info(`Pushed notification ${event.params.notificationId} to ${userEmail}: ${res}`);
+      await admin.messaging().send(payload as any);
     } catch (e) {
       logger.error(`Error pushing notification ${event.params.notificationId}:`, e);
     }
@@ -223,12 +349,8 @@ export const sendNotificationOnCreate = onDocumentCreated(
  */
 export const cleanupUserToken = onDocumentDeleted(
   "Users/{userId}",
-  async (event) => {
-    const userData = event.data?.data();
-    const fcmToken = userData?.fcmToken;
-    if (fcmToken) {
-      logger.info(`User ${event.params.userId} deleted, FCM token was: ${fcmToken}`);
-    }
+  async () => {
+    // Cleanup handler for user deletion
   }
 );
 
@@ -238,13 +360,95 @@ export const cleanupUserToken = onDocumentDeleted(
  */
 export const logTokenUpdate = onDocumentUpdated(
   "Users/{userId}",
-  async (event) => {
-    const beforeToken = event.data?.before.data()?.fcmToken;
-    const afterToken = event.data?.after.data()?.fcmToken;
-    if (beforeToken !== afterToken) {
-      logger.info(`User ${event.params.userId} FCM token updated`);
-      logger.info(`Old token: ${beforeToken || "none"}`);
-      logger.info(`New token: ${afterToken || "none"}`);
+  async () => {
+    // Token update handler
+  }
+);
+
+/**
+ * Gemini AI Analytics Proxy
+ * Handles AI summary generation for analytics reports with retry logic
+ */
+export const generateAISummary = onRequest(
+  {cors: true, timeoutSeconds: 120},
+  async (request, response) => {
+    if (request.method !== "POST") {
+      response.status(405).send("Method Not Allowed");
+      return;
     }
+
+    const {prompt} = request.body;
+
+    if (!prompt) {
+      response.status(400).send("Missing prompt");
+      return;
+    }
+
+    const apiKey = "AIzaSyDj7-EpkVM6md9EdcsdQD2kenkdFsnzNhs";
+    const apiUrl =
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+
+    const maxRetries = 3;
+    let lastError = null;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 8000);
+          logger.info(`Retry attempt ${attempt + 1}/${maxRetries} after ${backoffMs}ms`);
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        }
+
+        const geminiResponse = await fetch(`${apiUrl}?key=${apiKey}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            contents: [{parts: [{text: prompt}]}],
+          }),
+        });
+
+        if (geminiResponse.status === 503) {
+          lastError = "Service temporarily unavailable (503)";
+          logger.warn(`Attempt ${attempt + 1} failed: ${lastError}`);
+          continue;
+        }
+
+        if (geminiResponse.status === 429) {
+          lastError = "Rate limit exceeded (429)";
+          logger.warn(`Attempt ${attempt + 1} failed: ${lastError}`);
+          continue;
+        }
+
+        if (!geminiResponse.ok) {
+          const errorText = await geminiResponse.text();
+          logger.error("Gemini API error:", errorText);
+          response.status(500).send(`Gemini API error: ${errorText}`);
+          return;
+        }
+
+        const data = await geminiResponse.json();
+        const summary = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+        if (!summary) {
+          response.status(500).send("No summary generated");
+          return;
+        }
+
+        response.status(200).json({summary});
+        return;
+      } catch (error: any) {
+        lastError = error.message;
+        logger.error(`Attempt ${attempt + 1} error:`, error);
+
+        if (attempt === maxRetries - 1) {
+          response.status(500).send(`Error after ${maxRetries} attempts: ${lastError}`);
+          return;
+        }
+      }
+    }
+
+    response.status(503).send(
+      `Service unavailable after ${maxRetries} retries. Please try again later.`
+    );
   }
 );

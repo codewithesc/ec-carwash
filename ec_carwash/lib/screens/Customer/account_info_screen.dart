@@ -7,6 +7,8 @@ import 'customer_home.dart';
 import 'book_service_screen.dart';
 import 'booking_history.dart';
 import 'notifications_screen.dart';
+import '../../services/google_sign_in_service.dart';
+import '../login_page.dart';
 
 class AccountInfoScreen extends StatefulWidget {
   const AccountInfoScreen({super.key});
@@ -707,7 +709,7 @@ class _AccountInfoScreenState extends State<AccountInfoScreen> {
   }
 
   // --- Drawer navigation helper ---
-  void _navigateFromDrawer(String menu) {
+  void _navigateFromDrawer(String menu) async {
     setState(() {
       _selectedMenu = menu;
     });
@@ -736,7 +738,35 @@ class _AccountInfoScreenState extends State<AccountInfoScreen> {
     } else if (menu == 'Account') {
       // already in Account, do nothing (we keep it highlighted)
     } else if (menu == 'Logout') {
-      // TODO: implement logout
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Logout'),
+          content: const Text('Are you sure you want to logout?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Logout'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed == true) {
+        await GoogleSignInService.signOut();
+        if (!mounted) return;
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const LoginPage()),
+          (route) => false,
+        );
+      }
     }
   }
 
@@ -1015,7 +1045,7 @@ class _AccountInfoScreenState extends State<AccountInfoScreen> {
                             if (vehicle.totalVisits > 0) ...[
                               const SizedBox(height: 2),
                               Text(
-                                'Visits: ${vehicle.totalVisits} | Spent: ₱${vehicle.totalSpent.toStringAsFixed(2)}',
+                                'Visits: ${vehicle.totalVisits} | Spent: PHP ${vehicle.totalSpent.toStringAsFixed(2)}',
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: Colors.grey[600],

@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:ec_carwash/data_models/expense_data.dart';
-import 'package:ec_carwash/utils/reset_commissions.dart';
-import 'package:ec_carwash/utils/delete_all_data.dart';
 
 class PayrollScreen extends StatefulWidget {
   const PayrollScreen({super.key});
@@ -447,27 +445,9 @@ class _PayrollScreenState extends State<PayrollScreen> {
       final selectedDisbursementEndDate = result['disbursementEndDate'] as DateTime;
       final selectedDisbursementDate = result['disbursementDate'] as DateTime;
 
-      // Create period ID based on selected disbursement period
-      final periodId = '${selectedDisbursementStartDate.year}${selectedDisbursementStartDate.month.toString().padLeft(2, '0')}${selectedDisbursementStartDate.day.toString().padLeft(2, '0')}_${selectedDisbursementEndDate.year}${selectedDisbursementEndDate.month.toString().padLeft(2, '0')}${selectedDisbursementEndDate.day.toString().padLeft(2, '0')}';
-      final docId = '${periodId}_$teamName';
-
-      // Check if already disbursed for this specific period
-      final existingDoc = await FirebaseFirestore.instance
-          .collection('PayrollDisbursements')
-          .doc(docId)
-          .get();
-
-      if (existingDoc.exists && existingDoc.data()?['isDisbursed'] == true) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Salary for this period has already been disbursed to $teamName'),
-              backgroundColor: Colors.orange,
-            ),
-          );
-        }
-        return;
-      }
+      // Create unique doc ID for this disbursement
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final docId = '${timestamp}_$teamName';
 
       // Get all completed bookings for this team in the period
       final bookingsSnapshot = await FirebaseFirestore.instance
@@ -581,115 +561,131 @@ class _PayrollScreenState extends State<PayrollScreen> {
     }
   }
 
-  Future<void> _resetAllCommissions() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Reset All Commissions'),
-        content: const Text(
-          'This will reset all team commissions to ₱0.00 in the Bookings collection. This action cannot be undone.\n\nAre you sure you want to continue?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Reset All'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
+  Future<void> _showUndisbursedBookings(String teamName) async {
     try {
-      setState(() => _isLoading = true);
+      final bookingsSnapshot = await FirebaseFirestore.instance
+          .collection('Bookings')
+          .where('status', isEqualTo: 'completed')
+          .where('assignedTeam', isEqualTo: teamName)
+          .get();
 
-      final resetCount = await CommissionResetter.resetAllCommissions();
+      final undisbursedBookings = bookingsSnapshot.docs.where((doc) {
+        final data = doc.data();
+        final source = data['source'] as String? ?? '';
+        if (source == 'import') return false;
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✅ Successfully reset $resetCount commission records'),
-            backgroundColor: Colors.green,
+        final isPaid = data['salaryDisbursed'] as bool? ?? false;
+        return !isPaid;
+      }).toList();
+
+      // Sort old to new (oldest first)
+      undisbursedBookings.sort((a, b) {
+        final aData = a.data();
+        final bData = b.data();
+        final aCompletedAt = (aData['completedAt'] as Timestamp?)?.toDate() ??
+                            (aData['updatedAt'] as Timestamp?)?.toDate() ??
+                            (aData['createdAt'] as Timestamp?)?.toDate();
+        final bCompletedAt = (bData['completedAt'] as Timestamp?)?.toDate() ??
+                            (bData['updatedAt'] as Timestamp?)?.toDate() ??
+                            (bData['createdAt'] as Timestamp?)?.toDate();
+
+        if (aCompletedAt == null && bCompletedAt == null) return 0;
+        if (aCompletedAt == null) return 1;
+        if (bCompletedAt == null) return -1;
+        return aCompletedAt.compareTo(bCompletedAt); // Oldest first
+      });
+
+      if (!mounted) return;
+
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('$teamName - Undisbursed Jobs', style: const TextStyle(fontWeight: FontWeight.bold)),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: undisbursedBookings.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(20),
+                    child: Text('No undisbursed jobs found'),
+                  )
+                : ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: undisbursedBookings.length,
+                    itemBuilder: (context, index) {
+                      final doc = undisbursedBookings[index];
+                      final data = doc.data();
+                      final commission = (data['teamCommission'] as num?)?.toDouble() ?? 0.0;
+                      final completedAt = (data['completedAt'] as Timestamp?)?.toDate() ??
+                                         (data['updatedAt'] as Timestamp?)?.toDate() ??
+                                         (data['createdAt'] as Timestamp?)?.toDate();
+                      final customerName = data['userName'] as String? ?? 'Unknown';
+                      final plateNumber = data['plateNumber'] as String? ?? 'N/A';
+                      final services = data['services'] as List<dynamic>? ?? [];
+                      final source = data['source'] as String? ?? '';
+
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.yellow.shade700,
+                            child: Text(
+                              '${index + 1}',
+                              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
+                            ),
+                          ),
+                          title: Text(
+                            customerName,
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                          ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Plate: $plateNumber', style: const TextStyle(fontSize: 12)),
+                              Text('Services: ${services.length}', style: const TextStyle(fontSize: 12)),
+                              if (completedAt != null)
+                                Text(
+                                  'Completed: ${DateFormat('MMM dd, yyyy').format(completedAt)}',
+                                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                ),
+                              Text(
+                                'Source: $source',
+                                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                              ),
+                            ],
+                          ),
+                          trailing: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.green.shade100,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: Colors.green.shade700),
+                            ),
+                            child: Text(
+                              '₱${commission.toStringAsFixed(2)}',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.green.shade700,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
           ),
-        );
-
-        // Reload data
-        await _loadPayrollData();
-      }
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
     } catch (e) {
       if (mounted) {
-        setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('❌ Error resetting commissions: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _deleteAllData() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('⚠️ Delete All Data'),
-        content: const Text(
-          'This will PERMANENTLY DELETE all:\n\n• Transactions\n• Bookings\n\nThis action CANNOT be undone!\n\nAre you absolutely sure?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red.shade900,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('DELETE ALL'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
-    try {
-      setState(() => _isLoading = true);
-
-      final results = await DataDeleter.deleteAllTransactionsAndBookings();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '✅ Deleted ${results['transactions']} transactions and ${results['bookings']} bookings',
-            ),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 5),
-          ),
-        );
-
-        await _loadPayrollData();
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('❌ Error deleting data: $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Error loading undisbursed bookings: $e')),
         );
       }
     }
@@ -852,28 +848,6 @@ class _PayrollScreenState extends State<PayrollScreen> {
             ),
           ),
           const Spacer(),
-          OutlinedButton.icon(
-            onPressed: _deleteAllData,
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.red.shade900,
-              backgroundColor: Colors.red.shade100,
-              side: BorderSide(color: Colors.red.shade900, width: 1.5),
-            ),
-            icon: const Icon(Icons.delete_forever, size: 18),
-            label: const Text('Delete All'),
-          ),
-          const SizedBox(width: 8),
-          OutlinedButton.icon(
-            onPressed: _resetAllCommissions,
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.red.shade700,
-              backgroundColor: Colors.red.shade50,
-              side: BorderSide(color: Colors.red.shade700, width: 1.5),
-            ),
-            icon: const Icon(Icons.restore, size: 18),
-            label: const Text('Reset All'),
-          ),
-          const SizedBox(width: 8),
           OutlinedButton.icon(
             onPressed: _loadPayrollData,
             style: OutlinedButton.styleFrom(
@@ -1057,6 +1031,19 @@ class _PayrollScreenState extends State<PayrollScreen> {
                   ),
                 ),
                 const SizedBox(width: 12),
+                if (commission > 0.0) ...[
+                  OutlinedButton.icon(
+                    onPressed: () => _showUndisbursedBookings(teamName),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.black87,
+                      side: const BorderSide(color: Colors.black87, width: 1.5),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    ),
+                    icon: const Icon(Icons.list_alt, size: 18),
+                    label: const Text('View Jobs', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 ElevatedButton.icon(
                   onPressed: (commission == 0.0) ? null : () => _disburseSalary(teamName, commission),
                   style: ElevatedButton.styleFrom(

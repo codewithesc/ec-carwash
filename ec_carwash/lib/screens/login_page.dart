@@ -1,8 +1,9 @@
-import 'package:flutter/foundation.dart'; // 👈 for kIsWeb
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/google_sign_in_service.dart';
+import '../config/permissions_config.dart';
 import 'Admin/admin_staff_home.dart';
 import 'Customer/customer_home.dart';
 
@@ -118,14 +119,37 @@ class _LoginPageState extends State<LoginPage> {
       final User? user = await GoogleSignInService.signInWithGoogle();
 
       if (user != null && mounted) {
+        final userEmail = user.email?.toLowerCase() ?? '';
+
         if (kIsWeb) {
-          // 👉 On Web → Admin/Staff Home
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (_) => const AdminStaffHome()),
-          );
+          // On Web = Check if user has admin/staff permissions
+          final isAuthorized = PermissionsConfig.superAdminEmails.any(
+                (email) => email.toLowerCase() == userEmail) ||
+              PermissionsConfig.adminEmails.any(
+                (email) => email.toLowerCase() == userEmail) ||
+              PermissionsConfig.staffEmails.any(
+                (email) => email.toLowerCase() == userEmail);
+
+          if (isAuthorized) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (_) => const AdminStaffHome()),
+            );
+          } else {
+            // Unauthorized - sign out and show error
+            await GoogleSignInService.signOut();
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Access denied. Email "$userEmail" is not authorized for admin access.'),
+                  backgroundColor: Colors.red,
+                  duration: const Duration(seconds: 5),
+                ),
+              );
+            }
+          }
         } else {
-          // 👉 On Android/iOS → Customer Home
+          // On Android/iOS = Customer Home
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(builder: (_) => const CustomerHome()),

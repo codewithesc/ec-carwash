@@ -7,6 +7,9 @@ import 'package:ec_carwash/data_models/unified_transaction_data.dart' as txn_mod
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
 import 'dart:convert';
+import 'package:ec_carwash/services/gemini_analytics_service.dart';
+import 'package:ec_carwash/services/permission_service.dart';
+import 'package:ec_carwash/utils/currency_formatter.dart';
 
 class AnalyticsScreen extends StatefulWidget {
   const AnalyticsScreen({super.key});
@@ -24,7 +27,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   // Peak Operating Time Data (bookings per time unit - hour/day/month depending on filter)
   Map<dynamic, int> _peakTimeData = {};
 
-  // Top Services Data
+  // Top Services Data (now counts transactions instead of revenue)
   Map<String, double> _serviceRevenue = {};
 
   // Expenses Pattern Data
@@ -36,6 +39,17 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   double _totalExpenses = 0.0;
   double _profitMargin = 0.0;
   bool _showSalesReport = false;
+
+  // AI Summary State
+  String? _salesSummary;
+  String? _peakTimeSummary;
+  String? _servicesSummary;
+  String? _expensesSummary;
+  bool _isGeneratingSalesSummary = false;
+  bool _isGeneratingPeakSummary = false;
+  bool _isGeneratingServicesSummary = false;
+  bool _isGeneratingExpensesSummary = false;
+  String? _geminiError;
 
   @override
   void initState() {
@@ -81,13 +95,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           startDate = DateTime(now.year, now.month, now.day);
       }
 
-      // Load completed bookings (filter in memory to avoid index requirement)
-      final bookingsSnapshot = await FirebaseFirestore.instance
-          .collection('Bookings')
-          .where('status', isEqualTo: 'completed')
-          .get();
-
-      // Load completed transactions (includes CSV imports and POS transactions)
+      // Load completed transactions (includes CSV imports, POS transactions, and completed bookings)
       final transactionsSnapshot = await FirebaseFirestore.instance
           .collection('Transactions')
           .where('status', isEqualTo: 'completed')
@@ -99,76 +107,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       double totalRev = 0.0;
       int txnCount = 0;
 
-      // Process bookings
-      for (final doc in bookingsSnapshot.docs) {
-        final data = doc.data();
-        final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
-
-        // Filter by date range
-        if (createdAt == null ||
-            createdAt.isBefore(startDate) ||
-            createdAt.isAfter(endDate)) {
-          continue;
-        }
-
-        txnCount++;
-        // Use totalAmount (unified field) with fallback to 'total' for legacy data
-        final total = (data['totalAmount'] as num?)?.toDouble() ??
-                      (data['total'] as num?)?.toDouble() ?? 0.0;
-        final services = data['services'] as List?;
-
-        totalRev += total;
-
-        // Peak time analysis - varies by filter
-        dynamic timeKey;
-        switch (_selectedFilter) {
-          case 'today':
-            // Group by hour (0-23)
-            timeKey = createdAt.hour;
-            break;
-          case 'weekly':
-            // Group by day of week (1=Monday, 7=Sunday)
-            timeKey = createdAt.weekday;
-            break;
-          case 'monthly':
-            // Group by day of month (1-31)
-            timeKey = createdAt.day;
-            break;
-          case 'yearly':
-            // Group by month (1-12)
-            timeKey = createdAt.month;
-            break;
-          case 'custom':
-            // Determine based on date range span
-            final daysDiff = endDate.difference(startDate).inDays;
-            if (daysDiff <= 1) {
-              timeKey = createdAt.hour; // Hours for single day
-            } else if (daysDiff <= 31) {
-              // Use day offset from start date (0, 1, 2, ... n)
-              timeKey = createdAt.difference(DateTime(startDate.year, startDate.month, startDate.day)).inDays;
-            } else if (daysDiff <= 366) {
-              timeKey = createdAt.month; // Months for up to a year
-            } else {
-              timeKey = createdAt.year; // Years for longer periods
-            }
-            break;
-          default:
-            timeKey = createdAt.hour;
-        }
-
-        peakTimeCount[timeKey] = (peakTimeCount[timeKey] ?? 0) + 1;
-
-        // Top services analysis
-        if (services != null) {
-          for (final service in services) {
-            final serviceCode = service['serviceCode'] ?? 'Unknown';
-            final price = (service['price'] as num?)?.toDouble() ?? 0.0;
-            serviceRev[serviceCode] = (serviceRev[serviceCode] ?? 0.0) + price;
-          }
-        }
-      }
-
-      // Process transactions (CSV imports, POS transactions)
+      // Process transactions only (no separate booking processing to avoid duplicates)
       for (final doc in transactionsSnapshot.docs) {
         final data = doc.data();
         final transactionAt = (data['transactionAt'] as Timestamp?)?.toDate();
@@ -193,7 +132,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             timeKey = transactionAt.hour;
             break;
           case 'weekly':
-            timeKey = transactionAt.day;
+            timeKey = transactionAt.weekday; // Fixed: use weekday instead of day
             break;
           case 'monthly':
             timeKey = transactionAt.day;
@@ -203,14 +142,18 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             break;
           case 'custom':
             final daysDiff = endDate.difference(startDate).inDays;
+
             if (daysDiff <= 1) {
+              // Single day: use hours
               timeKey = transactionAt.hour;
-            } else if (daysDiff <= 31) {
-              // Use day offset from start date (0, 1, 2, ... n)
+            } else if (daysDiff <= 90) {
+              // Up to 90 days: use day offset from start date (0, 1, 2, ... n)
               timeKey = transactionAt.difference(DateTime(startDate.year, startDate.month, startDate.day)).inDays;
             } else if (daysDiff <= 366) {
+              // 3 months to 1 year: use months
               timeKey = transactionAt.month;
             } else {
+              // Over 1 year: use years
               timeKey = transactionAt.year;
             }
             break;
@@ -220,13 +163,12 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
         peakTimeCount[timeKey] = (peakTimeCount[timeKey] ?? 0) + 1;
 
-        // Top services analysis
+        // Top services analysis (count transactions, not revenue)
         if (services != null) {
           for (final service in services) {
             final serviceCode = service['serviceCode'] ?? 'Unknown';
-            final price = (service['price'] as num?)?.toDouble() ?? 0.0;
-            final quantity = (service['quantity'] as num?)?.toInt() ?? 1;
-            serviceRev[serviceCode] = (serviceRev[serviceCode] ?? 0.0) + (price * quantity);
+            // Count each service occurrence (transaction count)
+            serviceRev[serviceCode] = (serviceRev[serviceCode] ?? 0.0) + 1.0;
           }
         }
       }
@@ -269,6 +211,284 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         );
       }
     }
+  }
+
+  /// Generate AI summary for sales report
+  Future<void> _generateSalesSummary() async {
+    if (_isGeneratingSalesSummary) return;
+
+    setState(() {
+      _isGeneratingSalesSummary = true;
+      _geminiError = null;
+    });
+
+    try {
+      final summary = await GeminiAnalyticsService.generateSalesSummary(
+        revenue: _totalRevenue,
+        transactions: _totalTransactions,
+        expenses: _totalExpenses,
+        profitMargin: _profitMargin,
+        topServices: _serviceRevenue,
+        period: _getPeriodLabel(),
+      );
+
+      if (mounted) {
+        setState(() {
+          _salesSummary = summary;
+          _isGeneratingSalesSummary = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _geminiError = e.toString();
+          _isGeneratingSalesSummary = false;
+        });
+      }
+    }
+  }
+
+  /// Generate AI summary for peak times
+  Future<void> _generatePeakTimeSummary() async {
+    if (_isGeneratingPeakSummary) return;
+
+    setState(() {
+      _isGeneratingPeakSummary = true;
+      _geminiError = null;
+    });
+
+    try {
+      final summary = await GeminiAnalyticsService.generatePeakTimeSummary(
+        peakData: _peakTimeData,
+        period: _getPeriodLabel(),
+        timeUnit: _getTimeUnit(),
+      );
+
+      if (mounted) {
+        setState(() {
+          _peakTimeSummary = summary;
+          _isGeneratingPeakSummary = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _geminiError = e.toString();
+          _isGeneratingPeakSummary = false;
+        });
+      }
+    }
+  }
+
+  /// Generate AI summary for services
+  Future<void> _generateServicesSummary() async {
+    if (_isGeneratingServicesSummary) return;
+
+    setState(() {
+      _isGeneratingServicesSummary = true;
+      _geminiError = null;
+    });
+
+    try {
+      final summary = await GeminiAnalyticsService.generateServicesSummary(
+        serviceRevenue: _serviceRevenue,
+      );
+
+      if (mounted) {
+        setState(() {
+          _servicesSummary = summary;
+          _isGeneratingServicesSummary = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _geminiError = e.toString();
+          _isGeneratingServicesSummary = false;
+        });
+      }
+    }
+  }
+
+  /// Generate AI summary for expenses
+  Future<void> _generateExpensesSummary() async {
+    if (_isGeneratingExpensesSummary) return;
+
+    setState(() {
+      _isGeneratingExpensesSummary = true;
+      _geminiError = null;
+    });
+
+    try {
+      final summary = await GeminiAnalyticsService.generateExpensesSummary(
+        expensesByCategory: _expensesByCategory,
+        totalExpenses: _totalExpenses,
+      );
+
+      if (mounted) {
+        setState(() {
+          _expensesSummary = summary;
+          _isGeneratingExpensesSummary = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _geminiError = e.toString();
+          _isGeneratingExpensesSummary = false;
+        });
+      }
+    }
+  }
+
+  /// Get period label for AI context
+  String _getPeriodLabel() {
+    switch (_selectedFilter) {
+      case 'today':
+        return 'today';
+      case 'weekly':
+        return 'this week';
+      case 'monthly':
+        return 'this month';
+      case 'yearly':
+        return 'this year';
+      case 'custom':
+        if (_startDate != null && _endDate != null) {
+          final formatter = DateFormat('MMM d, yyyy');
+          return '${formatter.format(_startDate!)} to ${formatter.format(_endDate!)}';
+        }
+        return 'custom period';
+      default:
+        return 'today';
+    }
+  }
+
+  /// Get time unit for peak times
+  String _getTimeUnit() {
+    switch (_selectedFilter) {
+      case 'today':
+        return 'hour';
+      case 'weekly':
+        return 'day_of_week';
+      case 'monthly':
+        return 'day';
+      case 'yearly':
+        return 'month';
+      case 'custom':
+        if (_startDate == null || _endDate == null) return 'hour';
+        final daysDiff = _endDate!.difference(_startDate!).inDays;
+        if (daysDiff <= 1) return 'hour';
+        if (daysDiff <= 31) return 'day';
+        if (daysDiff <= 366) return 'month';
+        return 'year';
+      default:
+        return 'hour';
+    }
+  }
+
+  /// Build AI summary section widget
+  Widget _buildAISummarySection({
+    required String? summary,
+    required bool isGenerating,
+    required VoidCallback onGenerate,
+    required String title,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.blue.shade200, width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.auto_awesome, color: Colors.blue.shade700, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue.shade700,
+                ),
+              ),
+              const Spacer(),
+              if (!isGenerating)
+                IconButton(
+                  icon: Icon(
+                    summary == null ? Icons.lightbulb : Icons.refresh,
+                    color: Colors.blue.shade700,
+                  ),
+                  onPressed: onGenerate,
+                  tooltip: summary == null ? 'Generate AI Insights' : 'Refresh Insights',
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (isGenerating)
+            Center(
+              child: Column(
+                children: [
+                  CircularProgressIndicator(color: Colors.blue.shade700),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Generating insights...',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.blue.shade700,
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (_geminiError != null)
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.shade50,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: Colors.red.shade200),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.error_outline, color: Colors.red.shade700, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Error: ${_geminiError ?? "Unknown error"}',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.red.shade700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (summary == null)
+            Text(
+              'Click the lightbulb icon to generate AI-powered insights for this report.',
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.blue.shade700.withValues(alpha: 0.8),
+                fontStyle: FontStyle.italic,
+              ),
+            )
+          else
+            Text(
+              summary,
+              style: const TextStyle(
+                fontSize: 14,
+                color: Colors.black87,
+                height: 1.5,
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -476,7 +696,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       children: [
         Row(
           children: [
-            Expanded(child: _buildSalesMetric('Total Revenue', '₱${_totalRevenue.toStringAsFixed(2)}')),
+            Expanded(child: _buildSalesMetric('Total Revenue', CurrencyFormatter.format(_totalRevenue))),
             const SizedBox(width: 16),
             Expanded(child: _buildSalesMetric('Transactions', '$_totalTransactions')),
           ],
@@ -484,9 +704,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         const SizedBox(height: 16),
         Row(
           children: [
-            Expanded(child: _buildSalesMetric('Total Expenses', '₱${_totalExpenses.toStringAsFixed(2)}')),
+            Expanded(child: _buildSalesMetric('Total Expenses', CurrencyFormatter.format(_totalExpenses))),
             const SizedBox(width: 16),
-            Expanded(child: _buildSalesMetric('Profit', '₱${profit.toStringAsFixed(2)}')),
+            Expanded(child: _buildSalesMetric('Profit', CurrencyFormatter.format(profit))),
           ],
         ),
         const SizedBox(height: 16),
@@ -543,7 +763,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                   ),
                 ),
                 Text(
-                  '₱${entry.value.toStringAsFixed(2)}',
+                  CurrencyFormatter.format(entry.value),
                   style: const TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
@@ -554,6 +774,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             ),
           )),
         ],
+        const SizedBox(height: 20),
+        _buildAISummarySection(
+          summary: _salesSummary,
+          isGenerating: _isGeneratingSalesSummary,
+          onGenerate: _generateSalesSummary,
+          title: 'AI Insights',
+        ),
       ],
     );
   }
@@ -630,9 +857,14 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       case 'yearly':
         chartTitle = 'Peak Operating Months';
         chartSubtitle = 'Busiest months of the year';
-        // Months 1-12
+        // Months 1-12 - filter to ensure only month data is used
         for (int month = 1; month <= 12; month++) {
-          completeData[month] = _peakTimeData[month] ?? 0;
+          // Only include if the key is actually a month (1-12)
+          if (_peakTimeData.containsKey(month)) {
+            completeData[month] = _peakTimeData[month] ?? 0;
+          } else {
+            completeData[month] = 0;
+          }
         }
         break;
       case 'custom':
@@ -642,28 +874,34 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           chartSubtitle = 'No data available';
         } else {
           final daysDiff = _endDate!.difference(_startDate!).inDays;
+
           if (daysDiff <= 1) {
+            // Single day: show hours
             chartTitle = 'Peak Operating Hours';
-            chartSubtitle = 'Busiest times in selected period';
+            final formatter = DateFormat('MMM d, yyyy');
+            chartSubtitle = formatter.format(_startDate!);
             for (int hour = 8; hour <= 18; hour++) {
               completeData[hour] = _peakTimeData[hour] ?? 0;
             }
-          } else if (daysDiff <= 31) {
+          } else if (daysDiff <= 90) {
+            // Up to 90 days (3 months): show day offset (continuous days across months)
             chartTitle = 'Peak Operating Days';
-            chartSubtitle = 'Busiest days in selected period';
-            // Use day offset (0 to daysDiff)
+            final formatter = DateFormat('MMM d, yyyy');
+            chartSubtitle = '${formatter.format(_startDate!)} to ${formatter.format(_endDate!)}';
             for (int dayOffset = 0; dayOffset <= daysDiff; dayOffset++) {
               completeData[dayOffset] = _peakTimeData[dayOffset] ?? 0;
             }
           } else if (daysDiff <= 366) {
+            // 3 months to 1 year: show months
             chartTitle = 'Peak Operating Months';
-            chartSubtitle = 'Busiest months in selected period';
+            final formatter = DateFormat('MMM yyyy');
+            chartSubtitle = '${formatter.format(_startDate!)} to ${formatter.format(_endDate!)}';
             for (int month = 1; month <= 12; month++) {
               completeData[month] = _peakTimeData[month] ?? 0;
             }
           } else {
             chartTitle = 'Peak Operating Years';
-            chartSubtitle = 'Busiest years in selected period';
+            chartSubtitle = '${_startDate!.year} to ${_endDate!.year}';
             // Get the year range
             final startYear = _startDate!.year;
             final endYear = _endDate!.year;
@@ -839,6 +1077,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                 ),
               ),
             ),
+            const SizedBox(height: 20),
+            _buildAISummarySection(
+              summary: _peakTimeSummary,
+              isGenerating: _isGeneratingPeakSummary,
+              onGenerate: _generatePeakTimeSummary,
+              title: 'AI Insights',
+            ),
           ],
         ),
       ),
@@ -847,6 +1092,18 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
   Widget _getBottomTitle(int value, String filter) {
     String label;
+
+    // Defensive check: if value is 1-12 and we're clearly looking at month data,
+    // force month labels regardless of filter state
+    if (value >= 1 && value <= 12 && filter == 'yearly') {
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      label = months[value - 1];
+      return Text(
+        label,
+        style: const TextStyle(fontSize: 10, color: Colors.black87),
+      );
+    }
+
     switch (filter) {
       case 'today':
         // Hours (8 AM - 6 PM)
@@ -873,19 +1130,34 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         label = value >= 1 && value <= 12 ? months[value - 1] : '';
         break;
       case 'custom':
-        // Determine based on value range
-        if (value >= 0 && value <= 23) {
-          // Hours
-          final period = value >= 12 ? 'PM' : 'AM';
-          final displayHour = value == 0 ? 12 : (value > 12 ? value - 12 : value);
-          label = '$displayHour$period';
-        } else if (value >= 1 && value <= 31) {
-          // Days
-          label = value % 5 == 0 || value == 1 ? value.toString() : '';
-        } else if (value >= 1 && value <= 12) {
-          // Months
-          const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-          label = months[value - 1];
+        // Determine based on actual date range, not value
+        if (_startDate != null && _endDate != null) {
+          final daysDiff = _endDate!.difference(_startDate!).inDays;
+
+          if (daysDiff <= 1) {
+            // Single day: show hours
+            final period = value >= 12 ? 'PM' : 'AM';
+            final displayHour = value == 0 ? 12 : (value > 12 ? value - 12 : value);
+            label = '$displayHour$period';
+          } else if (daysDiff <= 90) {
+            // Up to 90 days: show date labels (value is day offset)
+            // Show labels every 5-10 days depending on range, plus first and last
+            final interval = daysDiff <= 31 ? 5 : 10;
+            if (value == 0 || value == daysDiff || value % interval == 0) {
+              final actualDate = _startDate!.add(Duration(days: value));
+              // Show as "M/D" format for clarity across months
+              label = '${actualDate.month}/${actualDate.day}';
+            } else {
+              label = '';
+            }
+          } else if (daysDiff <= 366) {
+            // 3 months to 1 year: show months
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            label = value >= 1 && value <= 12 ? months[value - 1] : '';
+          } else {
+            // Over 1 year: show years
+            label = value.toString();
+          }
         } else {
           label = value.toString();
         }
@@ -926,13 +1198,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             final period = value >= 12 ? 'PM' : 'AM';
             final displayHour = value == 0 ? 12 : (value > 12 ? value - 12 : value);
             return '$displayHour:00 $period';
-          } else if (daysDiff <= 31) {
-            // Day offset - show actual date
+          } else if (daysDiff <= 90) {
+            // Day offset - show actual date (up to 90 days)
             final actualDate = _startDate!.add(Duration(days: value));
-            return DateFormat('MMM d').format(actualDate);
+            return DateFormat('MMM d, yyyy').format(actualDate);
           } else if (daysDiff <= 366) {
-            // Months
-            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            // Months - show full month name with year
+            const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
             return value >= 1 && value <= 12 ? months[value - 1] : 'Month $value';
           } else {
             // Years
@@ -1066,7 +1338,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                     Text(
-                                      '₱${data.value.toStringAsFixed(2)}',
+                                      '${data.value.toInt()} transactions',
                                       style: TextStyle(
                                         fontSize: 12,
                                         color: Colors.black.withValues(alpha: 0.7),
@@ -1083,6 +1355,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                   ),
                 ],
               ),
+            ),
+            const SizedBox(height: 20),
+            _buildAISummarySection(
+              summary: _servicesSummary,
+              isGenerating: _isGeneratingServicesSummary,
+              onGenerate: _generateServicesSummary,
+              title: 'AI Insights',
             ),
           ],
         ),
@@ -1129,7 +1408,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Total Expenses: ₱${total.toStringAsFixed(2)}',
+              'Total Expenses: ${CurrencyFormatter.format(total)}',
               style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
@@ -1156,7 +1435,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                           ),
                         ),
                         Text(
-                          '₱${entry.value.toStringAsFixed(2)} (${percentage.toStringAsFixed(1)}%)',
+                          '${CurrencyFormatter.format(entry.value)} (${percentage.toStringAsFixed(1)}%)',
                           style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.bold,
@@ -1179,6 +1458,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                 ),
               );
             }),
+            const SizedBox(height: 20),
+            _buildAISummarySection(
+              summary: _expensesSummary,
+              isGenerating: _isGeneratingExpensesSummary,
+              onGenerate: _generateExpensesSummary,
+              title: 'AI Insights',
+            ),
           ],
         ),
       ),
@@ -1241,6 +1527,21 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
   /// Show CSV Import Dialog
   Future<void> _showImportCSVDialog() async {
+    // Check permission first
+    final hasPermission = await PermissionService.hasPermission('csv_import');
+    if (!hasPermission) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('You do not have permission to import CSV files'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+      return;
+    }
+
     try {
       // Pick CSV file
       final result = await FilePicker.platform.pickFiles(
@@ -1265,8 +1566,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
       // Decode CSV content
       final csvContent = utf8.decode(file.bytes!);
-      debugPrint('CSV content length: ${csvContent.length}');
-      debugPrint('First 200 chars: ${csvContent.substring(0, csvContent.length > 200 ? 200 : csvContent.length)}');
 
       // Validate CSV format
       if (!CSVImporter.validateCSVFormat(csvContent)) {
@@ -1401,7 +1700,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                             DataCell(Text(
                               txn.services.map((s) => s.serviceCode).join(', '),
                             )),
-                            DataCell(Text('₱${txn.total.toStringAsFixed(2)}')),
+                            DataCell(Text(CurrencyFormatter.format(txn.total))),
                           ]);
                         }).toList(),
                       ),
@@ -1474,16 +1773,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     );
 
     try {
-      debugPrint('Starting import of ${transactions.length} transactions');
-
       // Resolve service names from Firestore
-      debugPrint('Resolving service names...');
       await CSVImporter.resolveServiceNames(transactions);
 
       // Import to Firestore
-      debugPrint('Importing to Firestore...');
       final importedCount = await CSVImporter.importToFirestore(transactions);
-      debugPrint('Import completed: $importedCount transactions');
 
       if (mounted) {
         Navigator.pop(context); // Close progress dialog
@@ -1491,7 +1785,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '✓ Successfully imported $importedCount transaction(s)',
+              'Successfully imported $importedCount transaction(s)',
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
             backgroundColor: Colors.green,
@@ -1502,9 +1796,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         // Reload analytics data
         await _loadAnalyticsData();
       }
-    } catch (e, stackTrace) {
-      debugPrint('Import error: $e');
-      debugPrint('Stack trace: $stackTrace');
+    } catch (e) {
 
       if (mounted) {
         Navigator.pop(context); // Close progress dialog
@@ -1576,12 +1868,12 @@ class _CustomRangeDialogState extends State<_CustomRangeDialog> {
                       labelText: 'Month',
                       border: OutlineInputBorder(),
                     ),
-                    value: _startMonth,
+                    initialValue: _startMonth,
                     items: List.generate(12, (index) {
                       final month = index + 1;
                       return DropdownMenuItem(
                         value: month,
-                        child: Text(DateTime(2000, month).toString().split(' ')[0].split('-')[1]),
+                        child: Text(DateFormat('MMMM').format(DateTime(2000, month))),
                       );
                     }),
                     onChanged: (value) => setState(() => _startMonth = value),
@@ -1594,7 +1886,7 @@ class _CustomRangeDialogState extends State<_CustomRangeDialog> {
                       labelText: 'Year',
                       border: OutlineInputBorder(),
                     ),
-                    value: _startYear,
+                    initialValue: _startYear,
                     items: List.generate(5, (index) {
                       final year = DateTime.now().year - index;
                       return DropdownMenuItem(
@@ -1618,12 +1910,12 @@ class _CustomRangeDialogState extends State<_CustomRangeDialog> {
                       labelText: 'Month',
                       border: OutlineInputBorder(),
                     ),
-                    value: _endMonth,
+                    initialValue: _endMonth,
                     items: List.generate(12, (index) {
                       final month = index + 1;
                       return DropdownMenuItem(
                         value: month,
-                        child: Text(DateTime(2000, month).toString().split(' ')[0].split('-')[1]),
+                        child: Text(DateFormat('MMMM').format(DateTime(2000, month))),
                       );
                     }),
                     onChanged: (value) => setState(() => _endMonth = value),
@@ -1636,7 +1928,7 @@ class _CustomRangeDialogState extends State<_CustomRangeDialog> {
                       labelText: 'Year',
                       border: OutlineInputBorder(),
                     ),
-                    value: _endYear,
+                    initialValue: _endYear,
                     items: List.generate(5, (index) {
                       final year = DateTime.now().year - index;
                       return DropdownMenuItem(

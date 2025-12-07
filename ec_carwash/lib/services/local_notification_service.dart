@@ -28,9 +28,6 @@ class LocalNotificationService {
       initializationSettings,
       onDidReceiveNotificationResponse: (NotificationResponse response) {
         // Handle notification tap
-        if (kDebugMode) {
-          print('Notification tapped: ${response.payload}');
-        }
       },
     );
 

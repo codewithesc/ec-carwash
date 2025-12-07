@@ -12,6 +12,13 @@
 .swiftpm/
 migrate_working_dir/
 
+# Test/Debug files
+*.bak
+scripts/
+
+# Environment variables
+.env
+
 # IntelliJ related
 *.iml
 *.ipr

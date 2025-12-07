@@ -166,7 +166,7 @@ class CustomerService {
           .collection(_collection)
           .orderBy('name')
           .startAt([name])
-          .endAt([name + '\uf8ff'])
+          .endAt(['$name\uf8ff'])
           .limit(10)
           .get();
 

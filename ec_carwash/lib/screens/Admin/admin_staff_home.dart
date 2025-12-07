@@ -1,9 +1,14 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:ec_carwash/data_models/inventory_data.dart';
 import 'package:ec_carwash/data_models/expense_data.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:ec_carwash/utils/responsive_helper.dart';
+import 'package:ec_carwash/utils/currency_formatter.dart';
+import 'package:ec_carwash/services/google_sign_in_service.dart';
+import 'package:ec_carwash/services/permission_service.dart';
+import 'package:ec_carwash/main.dart' show ECCarwashApp;
 import 'pos_screen.dart';
 import 'inventory_screen.dart';
 import 'expenses_screen.dart';
@@ -30,16 +35,78 @@ class _AdminStaffHomeState extends State<AdminStaffHome> {
   double _todayRevenue = 0.0;
   double _totalRevenue = 0.0;
   double _todayExpenses = 0.0;
-  double _todayPayrollCommission = 0.0;
   int _pendingBookings = 0;
   List<Map<String, dynamic>> _recentTransactions = [];
   List<Map<String, dynamic>> _approvedBookingsList = [];
 
+  // User role
+  String _userRole = 'customer';
+
+  // Stream subscription for real-time updates
+  StreamSubscription<QuerySnapshot>? _pendingBookingsSubscription;
+
   @override
   void initState() {
     super.initState();
+    _loadUserRole();
     _loadLowStockItems();
     _loadDashboardData();
+    _listenToPendingBookings();
+  }
+
+  @override
+  void dispose() {
+    _pendingBookingsSubscription?.cancel();
+    super.dispose();
+  }
+
+  /// Listen to real-time updates for pending bookings
+  void _listenToPendingBookings() {
+    _pendingBookingsSubscription = FirebaseFirestore.instance
+        .collection('Bookings')
+        .where('status', isEqualTo: 'pending')
+        .snapshots()
+        .listen((snapshot) {
+      if (!mounted) return;
+
+      final today = DateTime.now();
+      int count = 0;
+
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final scheduledDate = (data['scheduledDateTime'] as Timestamp?)?.toDate() ??
+                             (data['selectedDateTime'] as Timestamp?)?.toDate() ??
+                             (data['scheduledDate'] as Timestamp?)?.toDate();
+
+        if (scheduledDate != null &&
+            scheduledDate.year == today.year &&
+            scheduledDate.month == today.month &&
+            scheduledDate.day == today.day) {
+          count++;
+        }
+      }
+
+      setState(() {
+        _pendingBookings = count;
+      });
+    });
+  }
+
+  Future<void> _loadUserRole() async {
+    final role = await PermissionService.getUserRole();
+    if (mounted) {
+      setState(() {
+        _userRole = role;
+      });
+
+      // Redirect unauthorized users
+      if (role != 'superadmin' && role != 'admin' && role != 'staff') {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (context) => const ECCarwashApp()),
+          (route) => false,
+        );
+      }
+    }
   }
 
   Future<void> _loadLowStockItems() async {
@@ -71,14 +138,12 @@ class _AdminStaffHomeState extends State<AdminStaffHome> {
           .get();
 
       double todayRev = 0.0;
-      double todayCommission = 0.0;
       List<Map<String, dynamic>> recentTxns = [];
 
       for (int i = 0; i < allTodayTransactionsSnapshot.docs.length; i++) {
         final doc = allTodayTransactionsSnapshot.docs[i];
         final data = doc.data();
         todayRev += (data['total'] as num?)?.toDouble() ?? 0.0;
-        todayCommission += (data['teamCommission'] as num?)?.toDouble() ?? 0.0;
 
         if (i < 5) {
           final customerData = data['customer'] as Map<String, dynamic>?;
@@ -192,7 +257,6 @@ class _AdminStaffHomeState extends State<AdminStaffHome> {
           _todayRevenue = todayRev;
           _totalRevenue = totalRev;
           _todayExpenses = todayExp;
-          _todayPayrollCommission = todayCommission;
           _pendingBookings = pendingBookings.length;
           _approvedBookingsList = approvedBookings;
           _recentTransactions = recentTxns;
@@ -206,19 +270,28 @@ class _AdminStaffHomeState extends State<AdminStaffHome> {
     }
   }
 
-  /// Define menu items
+  /// Define menu items based on user role
   List<String> getMenuItems() {
     final items = <String>[
-      "Dashboard",
-      "POS",
       "Transactions",
       "Inventory",
       "Expenses",
       "Services",
-      "Scheduling",
-      "Payroll",
-      "Analytics",
     ];
+
+    // Add POS and Scheduling only for superadmin and staff (not admin)
+    if (_userRole == 'superadmin' || _userRole == 'staff') {
+      items.insert(0, "POS");
+      items.add("Scheduling");
+    }
+
+    // Add Dashboard, Payroll, and Analytics only for admin and superadmin
+    if (_userRole == 'superadmin' || _userRole == 'admin') {
+      items.insert(0, "Dashboard"); // Add Dashboard at the beginning
+      items.add("Payroll");
+      items.add("Analytics");
+    }
+
     return items;
   }
 
@@ -287,6 +360,49 @@ class _AdminStaffHomeState extends State<AdminStaffHome> {
               color: Colors.yellow[700],
               size: 28,
             ),
+            actions: [
+              Tooltip(
+                message: 'Logout',
+                child: IconButton(
+                  icon: const Icon(Icons.logout_rounded),
+                  onPressed: () async {
+                    final confirm = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Logout'),
+                        content: const Text('Are you sure you want to logout?'),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('Cancel'),
+                          ),
+                          ElevatedButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red,
+                              foregroundColor: Colors.white,
+                            ),
+                            child: const Text('Logout'),
+                          ),
+                        ],
+                      ),
+                    );
+
+                    if (confirm == true) {
+                      await GoogleSignInService.signOut();
+                      if (mounted) {
+                        // ignore: use_build_context_synchronously
+                        Navigator.of(context).pushAndRemoveUntil(
+                          MaterialPageRoute(builder: (context) => const ECCarwashApp()),
+                          (route) => false,
+                        );
+                      }
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
           ),
         ),
       ),
@@ -1063,14 +1179,14 @@ class _AdminStaffHomeState extends State<AdminStaffHome> {
                 children: [
                   _buildKPICard(
                     title: 'Total Revenue',
-                    value: '₱${_totalRevenue.toStringAsFixed(2)}',
+                    value: CurrencyFormatter.format(_totalRevenue),
                     icon: Icons.account_balance_wallet,
                     subtitle: 'All time',
                     responsive: responsive,
                   ),
                   _buildKPICard(
                     title: "Today's Expenses",
-                    value: '₱${_todayExpenses.toStringAsFixed(2)}',
+                    value: CurrencyFormatter.format(_todayExpenses),
                     icon: Icons.money_off,
                     subtitle: 'Operating costs',
                     responsive: responsive,
@@ -1253,7 +1369,7 @@ class _AdminStaffHomeState extends State<AdminStaffHome> {
   }
 
   Widget _buildNetProfitCard(ResponsiveHelper responsive) {
-    final netProfit = _todayRevenue - _todayExpenses - _todayPayrollCommission;
+    final netProfit = _todayRevenue - _todayExpenses;
     final isPositive = netProfit >= 0;
 
     return Card(
@@ -1301,7 +1417,7 @@ class _AdminStaffHomeState extends State<AdminStaffHome> {
                     fit: BoxFit.scaleDown,
                     alignment: Alignment.centerLeft,
                     child: Text(
-                      '₱${netProfit.toStringAsFixed(2)}',
+                      CurrencyFormatter.format(netProfit),
                       style: TextStyle(
                         fontSize: responsive.fontSize(mobile: 24, tablet: 28, desktop: 32),
                         fontWeight: FontWeight.bold,
@@ -1310,7 +1426,7 @@ class _AdminStaffHomeState extends State<AdminStaffHome> {
                     ),
                   ),
                   Text(
-                    'Revenue: ₱${_todayRevenue.toStringAsFixed(2)} - Expenses: ₱${_todayExpenses.toStringAsFixed(2)} - Payroll: ₱${_todayPayrollCommission.toStringAsFixed(2)}',
+                    'Revenue: ${CurrencyFormatter.format(_todayRevenue)} - Expenses: ${CurrencyFormatter.format(_todayExpenses)}',
                     style: TextStyle(
                       fontSize: responsive.fontSize(mobile: 11, tablet: 12, desktop: 13),
                       color: Colors.black.withValues(alpha: 0.6),
@@ -1405,7 +1521,7 @@ class _AdminStaffHomeState extends State<AdminStaffHome> {
                         ),
                       ),
                       trailing: Text(
-                        '₱${txn['amount'].toStringAsFixed(2)}',
+                        CurrencyFormatter.format(txn['amount']),
                         style: const TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 16,

@@ -1,5 +1,4 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart';
 import 'local_notification_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../data_models/notification_data.dart';
@@ -7,9 +6,6 @@ import '../data_models/notification_data.dart';
 /// Top-level function to handle background messages
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  if (kDebugMode) {
-    print('Handling a background message: ${message.messageId}');
-  }
   // Avoid duplicate notifications: when a notification payload is sent,
   // Android/iOS will already display it while app is backgrounded.
   // Only handle data-only messages here if needed.
@@ -35,10 +31,6 @@ class FirebaseMessagingService {
       );
 
       if (settings.authorizationStatus == AuthorizationStatus.authorized) {
-        if (kDebugMode) {
-          print('User granted FCM permission');
-        }
-
         // Handle foreground messages
         FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
 
@@ -53,27 +45,14 @@ class FirebaseMessagingService {
         if (initialMessage != null) {
           _handleMessageOpenedApp(initialMessage);
         }
-      } else {
-        if (kDebugMode) {
-          print('User declined FCM permission');
-        }
       }
     } catch (e) {
-      if (kDebugMode) {
-        print('Error initializing Firebase Messaging: $e');
-      }
+      // Silently handle error
     }
   }
 
   /// Handle foreground messages (when app is open)
   static Future<void> _handleForegroundMessage(RemoteMessage message) async {
-    if (kDebugMode) {
-      print('Received foreground message: ${message.messageId}');
-      print('Title: ${message.notification?.title}');
-      print('Body: ${message.notification?.body}');
-      print('Data: ${message.data}');
-    }
-
     // Show local notification when app is in foreground
     if (message.notification != null) {
       await LocalNotificationService.showNotification(
@@ -103,11 +82,6 @@ class FirebaseMessagingService {
 
   /// Handle notification tap when app is in background or terminated
   static void _handleMessageOpenedApp(RemoteMessage message) {
-    if (kDebugMode) {
-      print('Notification opened app: ${message.messageId}');
-      print('Data: ${message.data}');
-    }
-
     // Avoid duplicates: only persist "general" messages opened from tray.
     try {
       final email = FirebaseAuth.instance.currentUser?.email;
@@ -135,13 +109,8 @@ class FirebaseMessagingService {
   static Future<void> subscribeToTopic(String topic) async {
     try {
       await _firebaseMessaging.subscribeToTopic(topic);
-      if (kDebugMode) {
-        print('Subscribed to topic: $topic');
-      }
     } catch (e) {
-      if (kDebugMode) {
-        print('Error subscribing to topic: $e');
-      }
+      // Silently handle error
     }
   }
 
@@ -149,13 +118,8 @@ class FirebaseMessagingService {
   static Future<void> unsubscribeFromTopic(String topic) async {
     try {
       await _firebaseMessaging.unsubscribeFromTopic(topic);
-      if (kDebugMode) {
-        print('Unsubscribed from topic: $topic');
-      }
     } catch (e) {
-      if (kDebugMode) {
-        print('Error unsubscribing from topic: $e');
-      }
+      // Silently handle error
     }
   }
 }

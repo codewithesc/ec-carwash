@@ -304,7 +304,16 @@ class InventoryManager {
 
   static Future<List<InventoryItem>> getLowStockItems() async {
     final items = await getItems();
-    return items.where((item) => item.isLowStock).toList();
+    final lowStockItems = items.where((item) => item.isLowStock).toList();
+
+    // Sort: out-of-stock (0) first, then by stock level ascending
+    lowStockItems.sort((a, b) {
+      if (a.currentStock == 0 && b.currentStock != 0) return -1;
+      if (a.currentStock != 0 && b.currentStock == 0) return 1;
+      return a.currentStock.compareTo(b.currentStock);
+    });
+
+    return lowStockItems;
   }
 
   static Future<void> updateStock(String itemId, int newStock) async {
@@ -361,18 +370,30 @@ class InventoryManager {
   }
 
   static Future<List<InventoryLog>> getLogs({String? itemId, int? limit}) async {
-    Query query = _firestore.collection(_logsCollection).orderBy('timestamp', descending: true);
+    // To avoid needing a composite index, we filter by itemId only
+    // and sort client-side
+    Query query = _firestore.collection(_logsCollection);
 
     if (itemId != null) {
       query = query.where('itemId', isEqualTo: itemId);
     }
 
-    if (limit != null) {
-      query = query.limit(limit);
+    final snapshot = await query.get();
+
+    // Convert to list and sort client-side
+    List<InventoryLog> logs = snapshot.docs
+        .map((doc) => InventoryLog.fromFirestore(doc))
+        .toList();
+
+    // Sort by timestamp descending (newest first)
+    logs.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+
+    // Apply limit if specified
+    if (limit != null && logs.length > limit) {
+      logs = logs.sublist(0, limit);
     }
 
-    final snapshot = await query.get();
-    return snapshot.docs.map((doc) => InventoryLog.fromFirestore(doc)).toList();
+    return logs;
   }
 
   static Future<void> withdrawStock(String itemId, int quantity, String staffName, String? notes) async {

@@ -613,10 +613,8 @@ class ServicesManager {
   }
 
   static Future<void> deleteService(String serviceId) async {
-    await _firestore.collection(_collection).doc(serviceId).update({
-      'isActive': false,
-      'updatedAt': Timestamp.fromDate(DateTime.now()),
-    });
+    // Permanently delete the service document from Firestore
+    await _firestore.collection(_collection).doc(serviceId).delete();
   }
 
   static Future<Service?> getService(String serviceId) async {

@@ -227,13 +227,20 @@ class _InventoryScreenState extends State<InventoryScreen> {
             leading: Container(
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                border: Border.all(color: Colors.black87, width: 1),
+                border: Border.all(
+                  color: item.currentStock == 0 ? Colors.red.shade700 : Colors.black87,
+                  width: 1,
+                ),
               ),
               child: CircleAvatar(
-                backgroundColor: item.isLowStock ? Colors.yellow.shade700 : Colors.yellow.shade100,
+                backgroundColor: item.currentStock == 0
+                    ? Colors.red.shade100
+                    : (item.isLowStock ? Colors.yellow.shade700 : Colors.yellow.shade100),
                 child: Icon(
-                  item.isLowStock ? Icons.warning : Icons.check_circle,
-                  color: Colors.black87,
+                  item.currentStock == 0
+                      ? Icons.block
+                      : (item.isLowStock ? Icons.warning : Icons.check_circle),
+                  color: item.currentStock == 0 ? Colors.red.shade700 : Colors.black87,
                 ),
               ),
             ),
@@ -267,9 +274,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
                       ),
                       TextSpan(
                         text: '${item.currentStock}',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontWeight: FontWeight.bold,
-                          color: Colors.black87,
+                          color: item.currentStock == 0 ? Colors.red.shade700 : Colors.black87,
                           fontSize: 16,
                         ),
                       ),
@@ -280,7 +287,25 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     ],
                   ),
                 ),
-                if (item.isLowStock)
+                if (item.currentStock == 0)
+                  Container(
+                    margin: const EdgeInsets.only(top: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade100,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: Colors.red.shade700, width: 1.5),
+                    ),
+                    child: Text(
+                      'OUT OF STOCK',
+                      style: TextStyle(
+                        color: Colors.red.shade700,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                  )
+                else if (item.isLowStock)
                   Container(
                     margin: const EdgeInsets.only(top: 6),
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -329,9 +354,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
                       case 'addStock':
                         _showAddStockDialog(item);
                         break;
-                      case 'adjust':
-                        _showAdjustStockDialog(item);
-                        break;
                       case 'history':
                         _showItemHistory(item);
                         break;
@@ -353,13 +375,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
                       child: ListTile(
                         leading: Icon(Icons.add_circle),
                         title: Text('Add Stock'),
-                      ),
-                    ),
-                    const PopupMenuItem(
-                      value: 'adjust',
-                      child: ListTile(
-                        leading: Icon(Icons.tune),
-                        title: Text('Adjust Stock'),
                       ),
                     ),
                     const PopupMenuItem(
@@ -417,75 +432,122 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
   void _showEditItemDialog(InventoryItem item) {
     final nameController = TextEditingController(text: item.name);
-    final categoryController = TextEditingController(text: item.category);
+    final customCategoryController = TextEditingController();
     final minStockController = TextEditingController(text: item.minStock.toString());
     final priceController = TextEditingController(text: item.unitPrice.toString());
     final unitController = TextEditingController(text: item.unit);
 
+    // Check if current category is in existing categories
+    String selectedCategory = _categories.contains(item.category) ? item.category : 'Other';
+    if (selectedCategory == 'Other') {
+      customCategoryController.text = item.category;
+    }
+
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Edit Item'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(labelText: 'Item Name'),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text('Edit Item'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(labelText: 'Item Name'),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: selectedCategory,
+                    decoration: const InputDecoration(
+                      labelText: 'Category',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [..._categories, 'Other']
+                        .map((category) => DropdownMenuItem(
+                              value: category,
+                              child: Text(category),
+                            ))
+                        .toList(),
+                    onChanged: (value) {
+                      if (value != null) {
+                        setDialogState(() => selectedCategory = value);
+                      }
+                    },
+                  ),
+                  if (selectedCategory == 'Other') ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: customCategoryController,
+                      decoration: const InputDecoration(
+                        labelText: 'Enter New Category',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: minStockController,
+                    decoration: const InputDecoration(labelText: 'Minimum Stock'),
+                    keyboardType: TextInputType.number,
+                  ),
+                  TextField(
+                    controller: priceController,
+                    decoration: const InputDecoration(labelText: 'Unit Price'),
+                    keyboardType: TextInputType.number,
+                  ),
+                  TextField(
+                    controller: unitController,
+                    decoration: const InputDecoration(labelText: 'Unit'),
+                  ),
+                ],
               ),
-              TextField(
-                controller: categoryController,
-                decoration: const InputDecoration(labelText: 'Category'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
               ),
-              TextField(
-                controller: minStockController,
-                decoration: const InputDecoration(labelText: 'Minimum Stock'),
-                keyboardType: TextInputType.number,
-              ),
-              TextField(
-                controller: priceController,
-                decoration: const InputDecoration(labelText: 'Unit Price'),
-                keyboardType: TextInputType.number,
-              ),
-              TextField(
-                controller: unitController,
-                decoration: const InputDecoration(labelText: 'Unit'),
+              ElevatedButton(
+                onPressed: () async {
+                  final finalCategory = selectedCategory == 'Other'
+                      ? customCategoryController.text.trim()
+                      : selectedCategory;
+
+                  if (finalCategory.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Please enter a category')),
+                    );
+                    return;
+                  }
+
+                  final updatedItem = item.copyWith(
+                    name: nameController.text,
+                    category: finalCategory,
+                    minStock: int.parse(minStockController.text),
+                    unitPrice: double.parse(priceController.text),
+                    unit: unitController.text,
+                    lastUpdated: DateTime.now(),
+                  );
+
+                  try {
+                    await InventoryManager.updateItem(item.id, updatedItem);
+                    await _loadData();
+                    if (mounted) Navigator.pop(context);
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error updating item: $e')),
+                      );
+                    }
+                  }
+                },
+                child: const Text('Save'),
               ),
             ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final updatedItem = item.copyWith(
-                name: nameController.text,
-                category: categoryController.text,
-                minStock: int.parse(minStockController.text),
-                unitPrice: double.parse(priceController.text),
-                unit: unitController.text,
-                lastUpdated: DateTime.now(),
-              );
-
-              try {
-                await InventoryManager.updateItem(item.id, updatedItem);
-                await _loadData();
-                if (mounted) Navigator.pop(context);
-              } catch (e) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Error updating item: $e')),
-                  );
-                }
-              }
-            },
-            child: const Text('Save'),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
@@ -512,6 +574,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   border: OutlineInputBorder(),
                 ),
                 keyboardType: const TextInputType.numberWithOptions(decimal: false),
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                ],
               ),
               const SizedBox(height: 12),
               TextField(
@@ -591,77 +656,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
     );
   }
 
-  void _showAdjustStockDialog(InventoryItem item) {
-    final stockController = TextEditingController(text: item.currentStock.toString());
-    final notesController = TextEditingController(); // QA Requirement #6
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Adjust Stock - ${item.name}'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Current Stock: ${item.currentStock} ${item.unit}'),
-              const SizedBox(height: 16),
-              TextField(
-                controller: stockController,
-                decoration: const InputDecoration(
-                  labelText: 'New Stock Amount',
-                  border: OutlineInputBorder(),
-                ),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: 16),
-              // QA Requirement #6: Add Notes field
-              TextField(
-                controller: notesController,
-                decoration: const InputDecoration(
-                  labelText: 'Notes (Optional)',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.note),
-                ),
-                maxLines: 3,
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final newStock = int.tryParse(stockController.text);
-              if (newStock != null) {
-                try {
-                  // Use adjustStockWithLog to log the change with notes
-                  await InventoryManager.adjustStockWithLog(
-                    item.id,
-                    newStock,
-                    'Admin', // TODO: Get from auth
-                    notesController.text.trim().isEmpty ? null : notesController.text.trim(),
-                  );
-                  await _loadData();
-                  if (mounted) Navigator.pop(context);
-                } catch (e) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Error updating stock: $e')),
-                    );
-                  }
-                }
-              }
-            },
-            child: const Text('Update'),
-          ),
-        ],
-      ),
-    );
-  }
-
   void _showDeleteConfirmation(InventoryItem item) {
     showDialog(
       context: context,
@@ -681,7 +675,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   itemId: item.id,
                   itemName: item.name,
                   quantity: item.currentStock,
-                  staffName: 'Admin', // TODO: Get from auth
+                  staffName: 'Admin',
                   action: 'delete',
                   notes: 'Item deleted from inventory',
                   timestamp: DateTime.now(),
@@ -938,19 +932,13 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
   void _showAddItemDialog() {
     final nameController = TextEditingController();
-    String selectedCategory = 'Cleaning Supplies';
+    final customCategoryController = TextEditingController();
+    // Use first existing category or default to 'Other'
+    final availableCategories = _categories.isNotEmpty ? [..._categories, 'Other'] : ['Other'];
+    String selectedCategory = availableCategories.first;
     String selectedUnit = 'bottles';
     final minStockController = TextEditingController();
     final initialStockController = TextEditingController();
-
-    // Predefined categories with 'Others' option (QA Requirement #2)
-    final predefinedCategories = [
-      'Cleaning Supplies',
-      'Wax & Polish',
-      'Equipment',
-      'Finishing Products',
-      'Others',
-    ];
 
     // Predefined units (QA Requirement #3)
     final predefinedUnits = [
@@ -986,7 +974,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     ),
                     const SizedBox(height: 16),
 
-                    // Category Dropdown (QA Requirement #2)
+                    // Category Dropdown with existing categories + 'Other'
                     DropdownButtonFormField<String>(
                       initialValue: selectedCategory,
                       decoration: const InputDecoration(
@@ -994,7 +982,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         border: OutlineInputBorder(),
                         prefixIcon: Icon(Icons.category),
                       ),
-                      items: predefinedCategories
+                      items: availableCategories
                           .map((category) => DropdownMenuItem(
                                 value: category,
                                 child: Text(category),
@@ -1006,6 +994,17 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         }
                       },
                     ),
+                    if (selectedCategory == 'Other') ...[
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: customCategoryController,
+                        decoration: const InputDecoration(
+                          labelText: 'Enter New Category *',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.add),
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 16),
 
                     // Unit Dropdown (QA Requirement #3)
@@ -1076,6 +1075,17 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     return;
                   }
 
+                  final finalCategory = selectedCategory == 'Other'
+                      ? customCategoryController.text.trim()
+                      : selectedCategory;
+
+                  if (finalCategory.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Please enter a category')),
+                    );
+                    return;
+                  }
+
                   final initialStock = int.tryParse(initialStockController.text.trim());
                   if (initialStock == null || initialStock < 0) {
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -1096,7 +1106,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     final newItem = InventoryItem(
                       id: '', // Firestore will generate
                       name: nameController.text.trim(),
-                      category: selectedCategory,
+                      category: finalCategory,
                       currentStock: initialStock,
                       minStock: minStock,
                       unitPrice: 0.0, // Default to 0 as price is removed from UI
@@ -1199,7 +1209,6 @@ class _InventoryLogHistoryScreenState extends State<InventoryLogHistoryScreen> {
                 const PopupMenuItem(value: 'all', child: Text('All Actions')),
                 const PopupMenuItem(value: 'withdraw', child: Text('Withdrawals')),
                 const PopupMenuItem(value: 'add', child: Text('Additions')),
-                const PopupMenuItem(value: 'adjust', child: Text('Adjustments')),
               ],
             ),
           ),

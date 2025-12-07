@@ -21,11 +21,13 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
   bool _isLoading = true;
   String _selectedFilter = 'today'; // all, today
   Timer? _autoCancelTimer;
+  StreamSubscription<QuerySnapshot>? _bookingsSubscription;
+  bool _isProcessingBooking = false;
 
   @override
   void initState() {
     super.initState();
-    _loadBookings();
+    _setupRealtimeListener();
     _fixExistingPOSBookingsPaymentStatus();
     _startAutoCancelTimer();
   }
@@ -33,7 +35,51 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
   @override
   void dispose() {
     _autoCancelTimer?.cancel();
+    _bookingsSubscription?.cancel();
     super.dispose();
+  }
+
+  /// Setup real-time listener for bookings
+  void _setupRealtimeListener() {
+    Query query = FirebaseFirestore.instance.collection('Bookings');
+
+    if (_selectedFilter == 'today') {
+      final now = DateTime.now();
+      final startOfDay = DateTime(now.year, now.month, now.day);
+      final endOfDay = DateTime(now.year, now.month, now.day, 23, 59, 59);
+
+      query = query
+          .where('scheduledDateTime', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
+          .where('scheduledDateTime', isLessThanOrEqualTo: Timestamp.fromDate(endOfDay));
+    }
+
+    _bookingsSubscription = query.snapshots().listen((snapshot) {
+      if (!mounted) return;
+
+      try {
+        final bookings = snapshot.docs.map((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          return Booking.fromJson(data, doc.id);
+        }).toList();
+
+        setState(() {
+          _pendingBookings = bookings.where((b) => b.status == 'pending').toList();
+          _approvedBookings = bookings.where((b) => b.status == 'approved').toList();
+          _completedBookings = bookings.where((b) => b.status == 'completed').toList();
+          _cancelledBookings = bookings.where((b) => b.status == 'cancelled').toList();
+          _isLoading = false;
+        });
+      } catch (e) {
+        setState(() {
+          _isLoading = false;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error loading bookings: $e')),
+          );
+        }
+      }
+    });
   }
 
   /// Start a timer that checks for bookings to auto-cancel every 5 minutes
@@ -106,10 +152,9 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
         }
       }
 
-      if (mounted) {
-        _loadBookings();
-      }
+      // Real-time listener will handle the updates automatically
     } catch (e) {
+      // Silent catch - errors handled by real-time listener
     }
   }
 
@@ -130,17 +175,30 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
 
       // Send notification to customer
       final userEmail = data['userEmail'] as String?;
+      final scheduledDateTime = (data['scheduledDateTime'] as Timestamp?)?.toDate();
+
       if (userEmail != null && userEmail.isNotEmpty) {
+        // Create a detailed cancellation message explaining the reason
+        String detailedReason = reason;
+        if (scheduledDateTime != null && reason.contains('No show')) {
+          final timeStr = '${scheduledDateTime.hour.toString().padLeft(2, '0')}:${scheduledDateTime.minute.toString().padLeft(2, '0')}';
+          detailedReason = 'Your booking for $timeStr has been cancelled because you did not arrive within 10 minutes. Your time slot may have been given to another customer. Please book again for a new time.';
+        } else if (scheduledDateTime != null && reason.contains('requested time')) {
+          final timeStr = '${scheduledDateTime.hour.toString().padLeft(2, '0')}:${scheduledDateTime.minute.toString().padLeft(2, '0')}';
+          detailedReason = 'Your booking for $timeStr has been cancelled because the scheduled time has passed. Your time slot may have been given to another customer. Please book a new time slot.';
+        }
+
         await NotificationManager.createNotification(
           userId: userEmail,
           title: 'Booking Cancelled',
-          message: 'Your booking has been automatically cancelled because the requested time slot is not available.',
+          message: detailedReason,
           type: 'booking_auto_cancelled',
-          metadata: {'bookingId': bookingId},
+          metadata: {'bookingId': bookingId, 'reason': reason},
         );
       }
 
     } catch (e) {
+      // Silent catch - errors handled by real-time listener
     }
   }
 
@@ -177,15 +235,69 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
     }
   }
 
+  // Check team capacity for a specific time slot
+  Future<Map<String, bool>> _checkTeamCapacity(DateTime scheduledDateTime) async {
+    try {
+      // Round to nearest 30-minute slot
+      final roundedMinute = (scheduledDateTime.minute ~/ 30) * 30;
+      final slotStart = DateTime(
+        scheduledDateTime.year,
+        scheduledDateTime.month,
+        scheduledDateTime.day,
+        scheduledDateTime.hour,
+        roundedMinute,
+      );
+      final slotEnd = slotStart.add(const Duration(minutes: 30));
+
+      // Query bookings in this time slot that are approved
+      final querySnapshot = await FirebaseFirestore.instance
+          .collection('Bookings')
+          .where('scheduledDateTime', isGreaterThanOrEqualTo: Timestamp.fromDate(slotStart))
+          .where('scheduledDateTime', isLessThan: Timestamp.fromDate(slotEnd))
+          .where('status', isEqualTo: 'approved')
+          .get();
+
+      int teamACount = 0;
+      int teamBCount = 0;
+
+      for (var doc in querySnapshot.docs) {
+        final data = doc.data();
+        final assignedTeam = data['assignedTeam'] as String?;
+
+        if (assignedTeam == 'Team A') {
+          teamACount++;
+        } else if (assignedTeam == 'Team B') {
+          teamBCount++;
+        }
+      }
+
+      // Return true if team is available (count < 1), false if full
+      return {
+        'Team A': teamACount < 1,
+        'Team B': teamBCount < 1,
+      };
+    } catch (e) {
+      // If error, allow both teams
+      return {'Team A': true, 'Team B': true};
+    }
+  }
+
   Future<void> _showTeamSelectionForApproval(Booking booking) async {
     String? selectedTeam;
+    Map<String, bool> teamAvailability = {'Team A': true, 'Team B': true};
+
+    // Check team capacity before showing dialog
+    teamAvailability = await _checkTeamCapacity(booking.scheduledDateTime);
 
     await showDialog(
       context: context,
-      barrierDismissible: false, // Prevent dismissing without selection
+      barrierDismissible: false,
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setState) {
+            final teamAAvailable = teamAvailability['Team A'] == true;
+            final teamBAvailable = teamAvailability['Team B'] == true;
+
             return AlertDialog(
               title: Row(
                 children: [
@@ -202,106 +314,174 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
                     style: const TextStyle(fontWeight: FontWeight.w500),
                   ),
                   Text("Plate: ${booking.plateNumber}"),
+                  if (booking.vehicleType != null && booking.vehicleType!.isNotEmpty)
+                    Text("Vehicle: ${booking.vehicleType}"),
                   Text("Total: ₱${booking.totalAmount.toStringAsFixed(2)}"),
                   const SizedBox(height: 20),
                   const Text(
                     "Which team will handle this booking?",
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
                   ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 8),
+                  if (!teamAAvailable && !teamBAvailable)
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        border: Border.all(color: Colors.orange.shade300),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.warning_amber, color: Colors.orange.shade700, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              "Both teams are fully booked for this time slot!",
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.orange.shade900,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 12),
                   Row(
                     children: [
                       Expanded(
-                        child: InkWell(
-                          onTap: () {
-                            setState(() {
-                              selectedTeam = "Team A";
-                            });
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: selectedTeam == "Team A"
-                                  ? Colors.blue.shade100
-                                  : Colors.grey.shade100,
-                              border: Border.all(
+                        child: Opacity(
+                          opacity: teamAvailability['Team A']! ? 1.0 : 0.5,
+                          child: InkWell(
+                            onTap: teamAvailability['Team A']!
+                                ? () {
+                                    setState(() {
+                                      selectedTeam = "Team A";
+                                    });
+                                  }
+                                : null,
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
                                 color: selectedTeam == "Team A"
-                                    ? Colors.blue.shade600
-                                    : Colors.grey.shade300,
-                                width: selectedTeam == "Team A" ? 3 : 1,
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Column(
-                              children: [
-                                Icon(
-                                  Icons.group,
-                                  size: 40,
+                                    ? Colors.blue.shade100
+                                    : teamAvailability['Team A']!
+                                        ? Colors.grey.shade100
+                                        : Colors.red.shade50,
+                                border: Border.all(
                                   color: selectedTeam == "Team A"
                                       ? Colors.blue.shade600
-                                      : Colors.grey.shade600,
+                                      : teamAvailability['Team A']!
+                                          ? Colors.grey.shade300
+                                          : Colors.red.shade300,
+                                  width: selectedTeam == "Team A" ? 3 : 1,
                                 ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  "Team A",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Column(
+                                children: [
+                                  Icon(
+                                    teamAvailability['Team A']! ? Icons.group : Icons.block,
+                                    size: 40,
                                     color: selectedTeam == "Team A"
                                         ? Colors.blue.shade600
-                                        : Colors.grey.shade700,
+                                        : teamAvailability['Team A']!
+                                            ? Colors.grey.shade600
+                                            : Colors.red.shade400,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    "Team A",
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                      color: selectedTeam == "Team A"
+                                          ? Colors.blue.shade600
+                                          : Colors.grey.shade700,
+                                    ),
+                                  ),
+                                  if (!teamAvailability['Team A']!)
+                                    Text(
+                                      "FULL",
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.red.shade600,
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
                       ),
                       const SizedBox(width: 16),
                       Expanded(
-                        child: InkWell(
-                          onTap: () {
-                            setState(() {
-                              selectedTeam = "Team B";
-                            });
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: selectedTeam == "Team B"
-                                  ? Colors.green.shade100
-                                  : Colors.grey.shade100,
-                              border: Border.all(
+                        child: Opacity(
+                          opacity: teamAvailability['Team B']! ? 1.0 : 0.5,
+                          child: InkWell(
+                            onTap: teamAvailability['Team B']!
+                                ? () {
+                                    setState(() {
+                                      selectedTeam = "Team B";
+                                    });
+                                  }
+                                : null,
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
                                 color: selectedTeam == "Team B"
-                                    ? Colors.green.shade600
-                                    : Colors.grey.shade300,
-                                width: selectedTeam == "Team B" ? 3 : 1,
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Column(
-                              children: [
-                                Icon(
-                                  Icons.group,
-                                  size: 40,
+                                    ? Colors.green.shade100
+                                    : teamAvailability['Team B']!
+                                        ? Colors.grey.shade100
+                                        : Colors.red.shade50,
+                                border: Border.all(
                                   color: selectedTeam == "Team B"
                                       ? Colors.green.shade600
-                                      : Colors.grey.shade600,
+                                      : teamAvailability['Team B']!
+                                          ? Colors.grey.shade300
+                                          : Colors.red.shade300,
+                                  width: selectedTeam == "Team B" ? 3 : 1,
                                 ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  "Team B",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Column(
+                                children: [
+                                  Icon(
+                                    teamAvailability['Team B']! ? Icons.group : Icons.block,
+                                    size: 40,
                                     color: selectedTeam == "Team B"
                                         ? Colors.green.shade600
-                                        : Colors.grey.shade700,
+                                        : teamAvailability['Team B']!
+                                            ? Colors.grey.shade600
+                                            : Colors.red.shade400,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    "Team B",
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                      color: selectedTeam == "Team B"
+                                          ? Colors.green.shade600
+                                          : Colors.grey.shade700,
+                                    ),
+                                  ),
+                                  if (!teamAvailability['Team B']!)
+                                    Text(
+                                      "FULL",
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.red.shade600,
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -397,7 +577,7 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
           });
 
       await BookingManager.updateBookingStatus(bookingId, status);
-      await _loadBookings(); // Refresh the list
+      // Real-time listener will handle the update automatically
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -417,6 +597,10 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
   }
 
   Future<void> _updateBookingStatus(String bookingId, String status) async {
+    if (_isProcessingBooking) return;
+
+    setState(() => _isProcessingBooking = true);
+
     try {
       // Find the booking from all lists
       Booking? booking;
@@ -434,7 +618,7 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
       // Update booking status
       await BookingManager.updateBookingStatus(bookingId, status);
 
-      // If marking as completed, add commission
+      // If marking as completed, add commission and create transaction
       if (status == 'completed') {
         // Calculate and add team commission (35%)
         final commission =
@@ -447,13 +631,17 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
             .doc(bookingId)
             .update({
               'teamCommission': commission,
+              'completedAt': FieldValue.serverTimestamp(),
             });
 
-        // Transaction should already exist from payment step
-        // No need to create transaction here
+        // Create transaction for ALL customer-app bookings (even if transactionId exists)
+        // This ensures completed bookings always appear in mobile app
+        if (booking.source == 'customer-app') {
+          await _createTransactionFromBooking(booking);
+        }
       }
 
-      await _loadBookings(); // Refresh the list
+      // Real-time listener will handle the update automatically
       if (mounted) {
         String message = 'Booking status updated to $status';
         ScaffoldMessenger.of(
@@ -466,10 +654,16 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
           context,
         ).showSnackBar(SnackBar(content: Text('Error updating booking: $e')));
       }
+    } finally {
+      if (mounted) {
+        setState(() => _isProcessingBooking = false);
+      }
     }
   }
 
   Future<void> _markAsPaid(Booking booking) async {
+    if (_isProcessingBooking) return;
+
     try {
       if (booking.id == null) return;
 
@@ -513,33 +707,40 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
 
       if (confirmed != true) return;
 
-      // Update payment status to 'paid' and change status to 'approved'
-      await FirebaseFirestore.instance
-          .collection('Bookings')
-          .doc(booking.id)
-          .update({
-            'paymentStatus': 'paid',
-            'status': 'approved',
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
+      setState(() => _isProcessingBooking = true);
 
-      // Create transaction when payment is confirmed
-      if (booking.source == 'customer-app' && booking.transactionId == null) {
-        await _createTransactionFromBooking(booking);
-      }
+      try {
+        // Update payment status to 'paid' and change status to 'approved'
+        await FirebaseFirestore.instance
+            .collection('Bookings')
+            .doc(booking.id)
+            .update({
+              'paymentStatus': 'paid',
+              'status': 'approved',
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
 
-      await _loadBookings();
+        // DON'T create transaction yet - only when marked as complete
+        // Transaction should only be created when service is actually completed
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Payment confirmed. Transaction created and booking moved to Approved.'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        // Real-time listener will handle the update automatically
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Payment confirmed. Booking moved to Approved.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } finally {
+        if (mounted) {
+          setState(() => _isProcessingBooking = false);
+        }
       }
     } catch (e) {
       if (mounted) {
+        setState(() => _isProcessingBooking = false);
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Error marking as paid: $e')));
@@ -557,6 +758,7 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
       final transactionId = await TransactionManager.createFromBooking(
         bookingId: booking.id!,
         customerName: booking.userName,
+        customerEmail: booking.userEmail,
         customerId: booking.customerId,
         vehiclePlateNumber: booking.plateNumber,
         contactNumber: booking.contactNumber,
@@ -625,6 +827,7 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
         await batch.commit();
       }
     } catch (e) {
+      // Ignore batch commit errors
     }
   }
 
@@ -800,7 +1003,8 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
       selected: isSelected,
       onSelected: (selected) {
         setState(() => _selectedFilter = value);
-        _loadBookings();
+        _bookingsSubscription?.cancel();
+        _setupRealtimeListener();
       },
       selectedColor: Colors.yellow.shade700,
       checkmarkColor: Colors.black,
@@ -861,14 +1065,36 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
               ),
             ),
             const SizedBox(height: 8),
-            // Plate number
-            Text(
-              booking.plateNumber,
-              style: TextStyle(
-                color: Colors.grey.shade700,
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-              ),
+            // Plate number and Vehicle type
+            Row(
+              children: [
+                Icon(Icons.directions_car, size: 14, color: Colors.grey.shade600),
+                const SizedBox(width: 4),
+                Text(
+                  booking.plateNumber,
+                  style: TextStyle(
+                    color: Colors.grey.shade700,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                if (booking.vehicleType != null && booking.vehicleType!.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    '•',
+                    style: TextStyle(color: Colors.grey.shade400),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    booking.vehicleType!,
+                    style: TextStyle(
+                      color: Colors.grey.shade600,
+                      fontSize: 11,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ],
             ),
             const SizedBox(height: 8),
             // Services with codes
